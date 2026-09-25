@@ -371,18 +371,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { ref } from "vue";
 import Icon from "../components/Icon.vue";
 import LanguageSwitcher from "../components/LanguageSwitcher.vue";
+import { isDarkTheme, nextTheme, saveTheme, applyTheme, getStoredTheme } from "../services/theme.js";
+import { clearLocalData as clearStoredLocalData, isLocalPersistenceAvailable, listFavorites, listRecentServers, loadStoredIdentity, recordRecentServer, removeFavorite, removeStoredIdentity, saveFavorite, saveLocalPreferences, saveStoredIdentity } from "../services/local-persistence.js";
 import { useVoiceWebSocket, type ChannelInfo, type ChannelMember, type ChatMessage, type LatencyProbeResult, type ScreenShareOutputSettings, type ScreenShareStream } from "../composables/useVoiceWebSocket.js";
-import { clearLocalData as clearStoredLocalData, isLocalPersistenceAvailable, listFavorites, listRecentServers, loadLocalPreferences, loadStoredIdentity, recordRecentServer, removeFavorite, removeStoredIdentity, saveFavorite, saveLocalPreferences, saveStoredIdentity, type FavoriteServer, type RecentServer } from "../services/local-persistence.js";
-import { applyTheme, getStoredTheme, isDarkTheme, nextTheme, saveTheme, type ThemeMode } from "../services/theme.js";
-import { combineTeamSpeakTarget, DEFAULT_TEAM_SPEAK_PORT, isValidTeamSpeakPort, splitTeamSpeakTarget } from "../services/teamspeak-target.js";
-
-interface TreeChannel extends ChannelInfo {
-  depth: number;
-  members: ChannelMember[];
-}
+import { useToasts } from "../composables/useToasts.js";
+import { useI18n } from "../composables/useI18n.js";
+import { useDisplay } from "../composables/useDisplay.js";
+import { useChannelTree } from "../composables/useChannelTree.js";
+import { useMemberActions } from "../composables/useMemberActions.js";
+import { useJoinFlow } from "../composables/useJoinFlow.js";
+import { useAudioSettings } from "../composables/useAudioSettings.js";
+import { useScreenShare } from "../composables/useScreenShare.js";
+import { usePerformance } from "../composables/usePerformance.js";
 
 const {
   state: voiceState,
@@ -463,2587 +466,314 @@ const {
   measureLatency,
 } = useVoiceWebSocket();
 
-const query = new URLSearchParams(location.search);
-const initialChannel = query.get("channel") ?? "";
-const inviteToken = query.get("invite") ?? "";
-const initialTarget = initialServerTarget();
-const nickname = ref(localStorage.getItem("webspeak:nickname") ?? "");
-const channel = ref(initialChannel);
-const serverHost = ref(initialTarget.address);
-const serverPort = ref(initialTarget.port);
-const serverPassword = ref("");
-const accessMode = ref<"fixed" | "open">("fixed");
-const rememberIdentity = ref(localStorage.getItem("webspeak:remember-identity") !== "0");
-const favoriteServers = ref<FavoriteServer[]>([]);
-const recentServers = ref<RecentServer[]>([]);
-const initialized = ref(false);
-const siteName = ref("WebSpeak");
+
+const { toast, chatListEl, scrollChatToEnd, showToast } = useToasts();
+
 const welcomeTextZh = ref("");
 const welcomeTextEn = ref("");
 const welcomeTextDe = ref("");
 const welcomeTextRu = ref("");
 const welcomeTextJa = ref("");
-const appVersion = ref("0.2.4");
-const visitorNumber = ref<number | null>(null);
-const visitorTotal = ref<number | null>(null);
-const accelerationRelays = ref<Array<{ id: string; name: string }>>([]);
-const accelerationRelayId = ref("");
-const accelerationAvailable = computed(() => accelerationRelays.value.length > 0);
-const browserError = ref("");
-const serverConfigLoading = ref(true);
-const memberQuery = ref("");
-const messageDraft = ref("");
-const selectedChannelId = ref("");
-const settingsOpen = ref(false);
-const channelPasswordDialog = reactive({ open: false, channelId: "", password: "", error: "", submitting: false });
-const serverPasswordDialog = reactive({ open: false, password: "", errorCode: "" });
+
+const { language, themeMode, themeIcon, themeLabel, localizedWelcomeText, t, localizedMessage, localizedAudioNotice, visibleErrorCode, persistLanguage, cycleTheme } = useI18n({
+  welcomeTextZh,
+  welcomeTextEn,
+  welcomeTextDe,
+  welcomeTextRu,
+  welcomeTextJa,
+});
+
+const tree = useChannelTree({
+  channels,
+  members,
+  chatMessages,
+  pokeNotifications,
+  whisperTargetIds,
+  voiceState,
+  switchChannel,
+  sendTextMessage,
+  sendServerMessage,
+  sendPrivateMessage,
+  playNotification,
+  t,
+  scrollChatToEnd,
+});
+
+const {
+  channel,
+  selectedChannelId,
+  memberQuery,
+  messageDraft,
+  chatTab,
+  privateClientId,
+  memberMenu,
+  mobileSection,
+  isMobileViewport,
+  channelTree,
+  currentChannel,
+  currentChannelName,
+  currentChannelDescription,
+  currentMembers,
+  roomMembers,
+  memberChannels,
+  filteredMemberChannels,
+  memberMoveMenuCurrentChannel,
+  memberMoveMenuCurrentSameChannel,
+  memberMoveMenuOtherChannels,
+  whisperTargets,
+  privateConversations,
+  visibleChatMessages,
+  chatTabLabel,
+  chatTitle,
+  chatPlaceholder,
+  visiblePokes,
+  memberMenuStyle,
+  selectChannel,
+  selectChannelById,
+  channelLabel,
+  submitMessage,
+  openPrivateChat,
+} = tree;
+
+const {
+  away,
+  awayMessage,
+  memberMoveMenuOpen,
+  draggedMember,
+  dragOverChannelId,
+  memberPointerDrag,
+  whisperPttActive,
+  openMemberMenu,
+  openMemberActions,
+  toggleMemberMoveMenu,
+  moveMemberDirect,
+  onMemberDragStart,
+  onMemberDragEnd,
+  onMemberPointerDown,
+  onMemberPointerMove,
+  onMemberPointerUp,
+  onMemberPointerCancel,
+  onChannelDragOver,
+  onChannelDragLeave,
+  onChannelDrop,
+  toggleWhisperTarget,
+  clearWhisperTargets,
+  pokeMember,
+  copyMemberName,
+  toggleAway,
+  dismissPoke,
+  onWhisperPttDown,
+  onWhisperPttUp,
+  stopWhisperTalk,
+} = useMemberActions({
+  whisperTargetIds,
+  setWhisperTargets,
+  setWhisperActive,
+  sendPoke,
+  setAway,
+  moveClient,
+  voiceState,
+  pokeNotifications,
+  playNotification,
+  accompanimentActive,
+  stopAccompaniment,
+  memberChannels: tree.memberChannels,
+  memberMenu,
+  isMobileViewport,
+  t,
+  showToast,
+  localizedMessage,
+});
+
+const {
+  performancePanelOpen,
+  performanceRunning,
+  performanceStats,
+  togglePerformancePanel,
+  refreshPerformanceProbe,
+  startPerformanceMonitoring,
+  stopPerformanceMonitoring,
+} = usePerformance({
+  voiceState,
+  measureLatency,
+});
+
+const {
+  nickname,
+  serverHost,
+  serverPort,
+  serverPassword,
+  accessMode,
+  rememberIdentity,
+  favoriteServers,
+  recentServers,
+  initialized,
+  siteName,
+  appVersion,
+  visitorNumber,
+  visitorTotal,
+  accelerationRelays,
+  accelerationRelayId,
+  accelerationAvailable,
+  browserError,
+  serverConfigLoading,
+  channelPasswordDialog,
+  serverPasswordDialog,
+  localPersistenceAvailable,
+  identityReady,
+  canJoin,
+  isFavorite,
+  doConnect,
+  doDisconnect,
+  submitServerPassword,
+  cancelServerPassword,
+  submitChannelPassword,
+  cancelChannelPassword,
+  doShare,
+  selectLocalServer,
+  toggleFavorite,
+  clearBrowserData,
+} = useJoinFlow({
+  voiceState,
+  connect,
+  disconnect,
+  switchChannel,
+  clearError,
+  identityMaterial,
+  playNotification,
+  checkSupport,
+  t,
+  showToast,
+  channel,
+  selectedChannelId,
+  channelTree,
+  themeMode,
+  applyTheme,
+  performancePanelOpen,
+  startPerformanceMonitoring,
+  stopPerformanceMonitoring,
+  saveLocalPreferences,
+  recordRecentServer,
+  listRecentServers,
+  loadStoredIdentity,
+  saveStoredIdentity,
+  removeStoredIdentity,
+  listFavorites,
+  saveFavorite,
+  removeFavorite,
+  clearStoredLocalData,
+  isLocalPersistenceAvailable,
+  welcomeTextZh,
+  welcomeTextEn,
+  welcomeTextDe,
+  welcomeTextRu,
+  welcomeTextJa,
+});
+
+const {
+  avatarInitial,
+  avatarStyle,
+  messageAvatar,
+  isSpeaking,
+  memberDisplayName,
+  formatTime,
+  rangeStyle,
+} = useDisplay({
+  members,
+  speakingIds,
+  nickname,
+  t,
+  language,
+});
+
+const {
+  settingsOpen,
+  audioSettingsError,
+  onVolInput,
+  onInputVolume,
+  onNoiseSuppressionToggle,
+  onOutputVolume,
+  onVoxThreshold,
+  onNotificationVolume,
+  onInputDeviceChange,
+  onOutputDeviceChange,
+  toggleMicTest,
+  micMeterBars,
+  meterBarHeight,
+  toggleMicrophone,
+} = useAudioSettings({
+  volumes,
+  setVolume,
+  setInputVolume,
+  setNoiseSuppressionEnabled,
+  setOutputVolume,
+  setVoxThreshold,
+  setNotificationVolume,
+  setInputDevice,
+  setOutputDevice,
+  prepareInputDevices,
+  refreshAudioDevices,
+  startMicrophoneTest,
+  stopMicrophoneTest,
+  microphoneTestActive,
+  micLevel,
+  microphoneMuted,
+  setMicrophoneMuted,
+  t,
+  localizedMessage,
+  showToast,
+});
+
+const {
+  screenVideoEl,
+  screenSharePlayerEl,
+  screenShareFullscreen,
+  screenShareResolutionOptions,
+  screenShareFrameRateOptions,
+  screenShareResolutionPreset,
+  screenShareFrameRate,
+  screenShareSettingsOpen,
+  setScreenVideoElement,
+  screenShareIndicatorBars,
+  screenShareErrorText,
+  activeScreenShareStream,
+  screenSharePlayerViewers,
+  screenSharePlayerViewerCount,
+  screenSharePlayerOwnerName,
+  screenShareStreamForMember,
+  toggleScreenShareForMember,
+  screenShareViewerStyle,
+  onScreenShareVolume,
+  toggleScreenShareFullscreen,
+  startScreenShareWithSettings,
+  toggleAccompaniment,
+} = useScreenShare({
+  screenShareStreams,
+  screenShareActive,
+  screenShareStarting,
+  screenShareViewing,
+  screenShareViewingStreamId,
+  screenShareRemoteStream,
+  screenShareError,
+  screenShareErrorCode,
+  screenShareRemoteVolume,
+  startAccompaniment,
+  stopAccompaniment,
+  accompanimentActive,
+  accompanimentErrorCode,
+  startScreenShare,
+  stopScreenShare,
+  joinScreenShare,
+  leaveScreenShare,
+  t,
+  localizedMessage,
+  showToast,
+  avatarStyle,
+  nickname,
+});
 const qqModalOpen = ref(false);
 const qqJoinUrl = "http://qm.qq.com/cgi-bin/qm/qr?_wv=1027&k=yhumUMDD9PmyYFWdXWUb_x7hM5trFQY8&authKey=Pw3HBGT7GwMinTQnuFGfnpf0aRSzXOJKcAiujVP1%2BXMpjheAKrncTRivicBJxpjV&noverify=0&group_code=869500475";
-const audioSettingsError = ref("");
-const toast = ref("");
-const chatListEl = ref<HTMLElement | null>(null);
-const screenVideoEl = ref<HTMLVideoElement | null>(null);
-const screenSharePlayerEl = ref<HTMLElement | null>(null);
-const screenShareFullscreen = ref(false);
-type ScreenShareResolutionPreset = "source" | "720p" | "1080p";
-const screenShareResolutionOptions: Array<{ value: ScreenShareResolutionPreset; width?: number; height?: number; label: string }> = [
-  { value: "source", label: "screenShareResolutionSource" },
-  { value: "720p", width: 1280, height: 720, label: "screenShareResolution720p" },
-  { value: "1080p", width: 1920, height: 1080, label: "screenShareResolution1080p" },
-];
-const screenShareFrameRateOptions = [5, 10, 15, 24, 30, 60];
-const storedScreenShareResolution = localStorage.getItem("webspeak:screen-share-resolution") as ScreenShareResolutionPreset | null;
-const screenShareResolutionPreset = ref<ScreenShareResolutionPreset>(screenShareResolutionOptions.some((option) => option.value === storedScreenShareResolution) ? storedScreenShareResolution! : "1080p");
-const storedScreenShareFrameRate = Number(localStorage.getItem("webspeak:screen-share-framerate"));
-const screenShareFrameRate = ref(screenShareFrameRateOptions.includes(storedScreenShareFrameRate) ? storedScreenShareFrameRate : 15);
-const screenShareSettingsOpen = ref(false);
-function setScreenVideoElement(element: unknown): void {
-  screenVideoEl.value = element instanceof HTMLVideoElement ? element : null;
-}
-const localPersistenceAvailable = isLocalPersistenceAvailable();
-const identityReady = ref(!localPersistenceAvailable);
-const chatTab = ref<"channel" | "server" | "private" | "events">("channel");
-const privateClientId = ref(0);
-const away = ref(false);
-const awayMessage = ref("");
-const memberMenu = ref<{ member: ChannelMember; x: number; y: number } | null>(null);
-const memberMoveMenuOpen = ref(false);
-const draggedMember = ref<ChannelMember | null>(null);
-const dragOverChannelId = ref("");
-const memberPointerDrag = reactive({ member: null as ChannelMember | null, pointerId: null as number | null, startX: 0, startY: 0, active: false, targetChannelId: "" });
-const mobileSection = ref<"channels" | "chat" | "voice" | "more">("channels");
-const isMobileViewport = ref(false);
-const whisperPttActive = ref(false);
-const performancePanelOpen = ref(false);
-const performanceRunning = ref(false);
-const performanceSamples = ref<LatencyProbeResult[]>([]);
-const performanceProbeResults = ref<Array<LatencyProbeResult | null>>([]);
-const performanceAttempts = ref(0);
-const PERFORMANCE_INTERVAL_MS = 3_000;
-const PERFORMANCE_WINDOW_SIZE = 20;
-let performanceTimer: number | null = null;
-let performanceMonitorGeneration = 0;
-let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
-type Language = "zh" | "en" | "de" | "ru" | "ja";
-const language = ref<Language>(getInitialLanguage());
-const themeMode = ref<ThemeMode>(getStoredTheme());
-const themeIcon = computed(() => isDarkTheme(themeMode.value) ? "sun" : "moon");
-const themeLabel = computed(() => isDarkTheme(themeMode.value) ? t("switchToLightTheme") : t("switchToDarkTheme"));
-const localizedWelcomeText = computed(() => {
-  const customText = {
-    zh: welcomeTextZh.value,
-    en: welcomeTextEn.value,
-    de: welcomeTextDe.value,
-    ru: welcomeTextRu.value,
-    ja: welcomeTextJa.value,
-  }[language.value];
-  return customText || t("joinDescription");
-});
-applyTheme(themeMode.value);
-const translations: Record<string, Record<string, string>> = {
-  zh: {
-    themeSystem: "跟随系统",
-    themeLight: "浅色主题",
-    themeDark: "深色主题",
-    switchToLightTheme: "切换到浅色主题",
-    switchToDarkTheme: "切换到深色主题",
-    browserWorkspace: "浏览器语音工作台",
-    secureGateway: "安全语音网关",
-    adminConsole: "管理控制台",
-    currentVersion: "当前版本",
-    errorCode: "错误代码",
-    viewChangelog: "查看更新日志",
-    notConfigured: "WebSpeak 尚未配置 TeamSpeak 目标。",
-    configureNow: "打开管理控制台",
-    privateAudio: "私密社区语音",
-    joinLine1: "连接服务器，",
-    joinLine2: "马上开始交流。",
-    joinDescription: "无需安装 TeamSpeak 客户端，打开浏览器即可加入语音频道。低延迟、轻量、专注于每一次对话。",
-    highQuality: "高质量语音",
-    opusAudio: "Opus 低延迟传输",
-    secureJoin: "安全加入",
-    inviteProtected: "邀请链接保护你的服务器",
-    realtime: "实时协作",
-    membersSync: "频道成员状态即时同步",
-    privateServer: "私密语音服务器",
-    mainNav: "主导航",
-    memberVolume: "成员音量",
-    joinServer: "加入你的服务器",
-    welcomeBack: "欢迎回来",
-    joinLead: "输入一个昵称，选择进入的频道。",
-    visitorCount: "你是第 {{count}} 个访客",
-    visitorTotal: "共计 {{count}} 个访客",
-    serverAddress: "TeamSpeak 服务器地址",
-    serverAddressPlaceholder: "例如：ts.example.com 或 127.0.0.1",
-    serverPort: "语音端口",
-    serverPortPlaceholder: "9987",
-    serverAddressHint: "这是网关服务器连接的 TeamSpeak 地址和端口，不是浏览器直接连接地址。",
-    relayAcceleration: "连接中继",
-    directConnection: "直连 TeamSpeak",
-    relayAccelerationHint: "选择一个已配置的中继节点，适合直连不稳定或被拒绝的服务器。",
-    nickname: "你的昵称",
-    nicknamePlaceholder: "例如：Alex Rivera",
-    targetChannel: "目标频道",
-    optional: "可选",
-    emptyDefault: "留空进入默认频道",
-    rememberIdentity: "记住此设备的 TeamSpeak 身份",
-    rememberIdentityHint: "仅保存在本设备，用于下次连接时保持身份。",
-    rememberIdentityConcurrentWarning: "同一浏览器只能同时使用一条保持身份的连接；要开启第二条，请取消勾选或使用另一个浏览器。",
-    identityOptions: "设备身份选项",
-    localPersistenceUnavailable: "当前浏览器无法使用持久化存储，本次将使用临时身份。",
-    favoriteServers: "常用服务器",
-    recentServers: "最近连接",
-    saveFavorite: "保存到常用",
-    removeFavorite: "移除常用",
-    savedFavoriteToast: "已保存到常用服务器",
-    removedFavoriteToast: "已从常用服务器移除",
-    clearLocalData: "清除本地数据",
-    clearLocalDataConfirm: "确定清除本设备保存的身份、收藏、最近连接和音频偏好吗？",
-    localDataCleared: "本地数据已清除",
-    connecting: "正在连接…",
-    enterVoice: "进入语音空间",
-    connectionAuthorized: "连接信息仅用于本次语音会话",
-    githubRepository: "GitHub 仓库",
-    qqGroup: "QQ群",
-    qqGroupQrAlt: "QQ群二维码",
-    qqJoinDirect: "或通过群聊链接直接加入",
-    joinQqGroup: "点击加入QQ群",
-    bilibiliProfile: "Bilibili 个人空间",
-    browserSupport: "Chrome / Edge 94+",
-    teamSpeakClient: "TeamSpeak 浏览器客户端",
-    home: "首页",
-    activity: "动态",
-    server: "服务器",
-    discover: "发现",
-    downloads: "下载",
-    help: "帮助",
-    needHelp: "需要帮助？请联系服务器管理员",
-    serverOptions: "更多服务器选项",
-    online: "在线",
-    audioSettings: "音频设置",
-    overallVolume: "整体音量",
-    muteOutput: "临时静音",
-    unmuteOutput: "恢复声音",
-    desktopAudioControls: "音频控制",
-    desktopAudioHint: "悬停图标调整音量",
-    startAccompaniment: "共享伴奏",
-    stopAccompaniment: "停止伴奏",
-    accompanimentStarted: "伴奏共享已开始",
-    accompanimentStopped: "伴奏共享已停止",
-    accompanimentActive: "伴奏共享中",
-    accompanimentNeedsWebRtc: "伴奏功能需要启用 WebRTC",
-    accompanimentNoAudio: "所选来源没有可共享音频，请重新选择并勾选共享音频",
-    accompanimentPermissionDenied: "无法获取伴奏音频，请允许屏幕共享并勾选共享音频",
-    accompanimentUnsupported: "当前浏览器不支持伴奏共享",
-    screenShare: "屏幕共享",
-    screenShareTitle: "屏幕共享",
-    startScreenShare: "共享屏幕",
-    screenShareStarting: "正在启动直播",
-    stopScreenShare: "停止共享",
-    sharingScreen: "直播中",
-    watchingScreenShare: "正在观看",
-    watchScreenShare: "观看屏幕共享",
-    leaveScreenShare: "停止观看",
-    screenShareVolume: "共享音量",
-    browserSource: "浏览器来源",
-    teamSpeakSource: "TeamSpeak 客户端来源",
-    sharedAudio: "含共享音频",
-    noScreenShares: "当前没有正在进行的屏幕共享",
-    directP2POnly: "直连 P2P · STUN 仅用于发现公网地址",
-    screenShareNativeUnavailable: "原生 TeamSpeak 屏幕共享暂不支持网页观看",
-    screenShareExit: "退出观看",
-    screenShareConnecting: "正在连接屏幕共享",
-    screenShareViewers: "正在观看的观众",
-    screenShareFullscreen: "全屏",
-    screenShareExitFullscreen: "退出全屏",
-    screenShareSettings: "共享设置",
-    screenShareSettingsHint: "共享前调整输出质量",
-    screenShareResolution: "输出分辨率",
-    screenShareResolutionSource: "原始分辨率",
-    screenShareResolution720p: "720p（最高 1280 × 720）",
-    screenShareResolution1080p: "1080p（最高 1920 × 1080）",
-    screenShareFrameRate: "帧率上限",
-    screenShareSettingsNote: "设置会在下一次开始共享时生效",
-    watching: "观看中",
-    serverPassword: "服务器密码",
-    optionalPassword: "没有密码可留空",
-    serverPasswordTitle: "服务器需要密码",
-    serverPasswordPrompt: "输入服务器密码",
-    serverPasswordRequiredLead: "该服务器需要密码，输入密码后重试。",
-    serverPasswordInvalidLead: "服务器密码不正确，请重新输入后重试。",
-    serverPasswordRetry: "输入密码并重试",
-    serverPasswordRetryPlaceholder: "请输入服务器密码",
-    switchChannel: "切换频道",
-    searchChannels: "搜索频道",
-    voiceChannels: "语音频道",
-    peopleOnline: "{{count}} 人在线",
-    channelPreparing: "频道列表准备中",
-    channelPreparingLead: "服务器未提供频道目录时，仍可正常使用语音连接。",
-    reload: "重新加载",
-    quickActions: "快捷操作",
-    inviteFriends: "邀请朋友加入",
-    audioAndMic: "音频与麦克风",
-    stableConnection: "连接稳定",
-    websocket: "WebSocket",
-    serverBreadcrumb: "服务器",
-    copyInvite: "复制邀请链接",
-    exit: "退出",
-    live: "直播中",
-    voiceSpace: "语音空间",
-    roomDescription: "在这里和频道成员保持清晰、自然的交流。",
-    membersOnline: "{{count}} 位成员在线",
-    encrypted: "加密连接",
-    voiceActivity: "语音活动",
-    speakingNow: "正在语音中",
-    onlineShort: "{{count}} 在线",
-    you: "你",
-    selfSuffix: "（你）",
-    connected: "已连接",
-    speaking: "正在说话…",
-    connectedYou: "已连接 · 你",
-    waitingForMembers: "等待成员加入语音",
-    prepareMicrophone: "你可以先在这里准备好麦克风。",
-    moreMembers: "更多成员",
-    viewLeft: "在左侧查看",
-    textChannel: "文字频道",
-    channelChat: "{{channel}} 聊天",
-    messageCount: "{{count}} 条消息",
-    chatStart: "这是聊天的开始",
-    chatStartLead: "发送一条消息，和频道里的朋友打个招呼吧。",
-    chatTabs: "聊天标签",
-    serverChat: "服务器",
-    privateMessage: "私聊",
-    privateMessagePlaceholder: "发送私聊消息…",
-    serverMessagePlaceholder: "发送服务器消息…",
-    channelPasswordPrompt: "请输入频道密码",
-    channelPasswordTitle: "进入加密频道",
-    channelPasswordLead: "该频道需要密码才能进入。",
-    channelPasswordPlaceholder: "输入频道密码",
-    channelPasswordOptional: "如目标频道有密码，请输入",
-    channelPasswordSubmit: "进入频道",
-    channelPasswordCancel: "取消",
-    channelPasswordRetry: "密码不正确，请重试。",
-    privateChatStart: "这是私聊的开始",
-    privateChatStartLead: "发送一条私聊消息。",
-    eventLog: "事件日志",
-    eventCount: "{{count}} 条事件",
-    noEvents: "暂无服务器事件",
-    noEventsLead: "频道和成员变化会显示在这里。",
-    available: "在线",
-    away: "离开",
-    awayPrompt: "离开状态说明（可选）",
-    poke: "戳一戳",
-    pokedYou: "戳了你一下",
-    pokeMessagePrompt: "戳一戳消息（可选）",
-    pokeSent: "已发送戳一戳",
-    copyNickname: "复制昵称",
-    moveMember: "移动到频道",
-    moveMemberMenu: "调度到",
-    moveMemberMyChannel: "我所在的频道",
-    moveMemberNoChannels: "没有可移动的频道",
-    moveMemberTitle: "移动 {{member}}",
-    moveMemberLead: "选择目标频道。TeamSpeak 会根据你的移动权限决定是否允许此操作。",
-    moveMemberTarget: "目标频道",
-    moveMemberChooseChannel: "请选择目标频道",
-    moveMemberSubmit: "确认移动",
-    moveMemberSuccess: "成员已移动",
-    movePermissionDenied: "你没有移动成员的权限",
-    copiedNickname: "昵称已复制",
-    attachmentUnavailable: "附件暂不可用",
-    emojiUnavailable: "表情暂不可用",
-    sendMessagePlaceholder: "发送消息给频道成员…",
-    send: "发送",
-    muteMic: "闭麦",
-    unmuteMic: "开麦",
-    microphoneActive: "麦克风已开启",
-    microphoneMuted: "麦克风已关闭",
-    microphoneActiveHint: "关闭麦克风后不会向服务器发送声音",
-    microphoneMutedHint: "麦克风已关闭，其他人听不到你的声音",
-    sending: "正在发送",
-    exitVoice: "退出语音",
-    people: "成员",
-    searchMembers: "搜索成员",
-    onlineGroup: "在线 — {{count}}",
-    yourDevice: "你的设备",
-    memberOnline: "在线",
-    memberStates: "成员状态",
-    inputMuted: "已禁用麦克风",
-    outputMuted: "已禁用扬声器",
-    channelCommander: "频道指挥官",
-    noMatchingMembers: "没有找到匹配的成员",
-    noMembersInChannel: "此频道暂无成员",
-    volumeTip: "拖动成员右侧滑杆，单独调整听到的音量。",
-    moreMemberOptions: "更多成员选项",
-    connectedToast: "当前已连接到此服务器",
-    connectionInterrupted: "连接已中断，正在尝试恢复…",
-    reconnectingAttempt: "第 {{attempt}} 次重连",
-    reconnectFailed: "无法恢复连接",
-    reconnectNow: "立即重连",
-    back: "返回",
-    volumeToast: "成员音量可以在列表中单独调整",
-    copiedToast: "邀请链接已复制",
-    copyFailedToast: "复制失败，请手动复制浏览器地址",
-    leftToast: "已安全退出语音空间",
-    focusedToast: "当前版本聚焦于语音工作台",
-    settings: "设置",
-    profile: "个人资料",
-    privacy: "隐私",
-    notifications: "通知",
-    browserClient: "浏览器客户端",
-    audioConfiguration: "音频配置",
-    inputDevice: "输入设备",
-    microphone: "麦克风",
-    microphoneState: "麦克风状态",
-    defaultMicrophone: "默认浏览器麦克风",
-    microphoneNumber: "麦克风 {{index}}",
-    speakerNumber: "扬声器 {{index}}",
-    permission: "权限",
-    permissionUnknown: "尚未请求",
-    permissionGranted: "已允许",
-    permissionDenied: "已拒绝",
-    inputVolume: "输入音量",
-    voxThreshold: "语音激活阈值",
-    micLevel: "麦克风音量",
-    microphoneTest: "麦克风测试",
-    stopTest: "停止测试",
-    startTest: "开始测试",
-    localMicTestHint: "本地测试：录音只在浏览器中播放，不会发送到 TeamSpeak。",
-    silence: "安静",
-    optimal: "最佳",
-    loud: "较响",
-    outputDevice: "输出设备",
-    speakers: "扬声器 / 耳机",
-    defaultOutput: "默认浏览器输出",
-    outputVolume: "输出音量",
-    outputDeviceUnsupported: "当前浏览器不支持扬声器设备选择，将使用默认输出设备。",
-    notificationVolume: "通知音量",
-    audioStatus: "音频状态",
-    audioReady: "音频已就绪",
-    noiseSuppression: "浏览器降噪",
-    noiseSuppressionHint: "在浏览器采集端处理",
-    rnnoise: "RNNoise 降噪",
-    echoCancellation: "回声消除",
-    autoGainControl: "自动增益",
-    processingEnabled: "已启用",
-    processingDisabled: "已关闭",
-    processingUnknown: "浏览器未报告",
-    audioUnavailable: "音频不可用（麦克风故障）",
-    microphoneUnavailable: "麦克风不可用，你暂时无法说话",
-    audioSuspended: "音频被浏览器暂停",
-    audioUnknown: "尚未初始化",
-    audioPrivacy: "WebSpeak 会在浏览器安全上下文中处理音频，不会保存录音。",
-    mobileNavigation: "移动端导航",
-    mobileChannels: "频道",
-    mobileChat: "聊天",
-    mobileVoice: "语音",
-    mobileMore: "更多",
-    whisperTargets: "私语目标",
-    setWhisperTarget: "设为私语目标",
-    removeWhisperTarget: "移除私语目标",
-    clearWhisperTargets: "清除目标",
-    whisperHoldToTalk: "按住私语",
-    releaseWhisper: "松开结束私语",
-    cancel: "取消",
-    saveChanges: "保存更改",
-    close: "关闭",
-    done: "完成",
-    voiceLobby: "语音大厅",
-    languageMenu: "语言",
-    networkPerformance: "网络性能",
-    networkPerformanceHint: "浏览器到网关，再到 TeamSpeak 的实时探测",
-    browser: "浏览器",
-    webSpeakGateway: "WebSpeak",
-    teamSpeakServer: "TeamSpeak",
-    browserToGateway: "浏览器 → WebSpeak",
-    gatewayToTeamSpeak: "WebSpeak → TeamSpeak",
-    packetLoss: "丢包",
-    measuring: "正在测量…",
-    measureComplete: "持续监测中（每 3 秒更新）",
-    measureNow: "立即测量",
-    measureUnavailable: "连接后可测量",
-    webrtcStats: "屏幕共享 WebRTC",
-    webrtcStatsHint: "每秒采样实际媒体状态",
-    screenShareCapture: "采集",
-    screenShareSending: "发送给观看者",
-    screenShareReceiving: "从共享者接收",
-    screenShareDroppedFrames: "丢帧",
-    screenShareJitter: "抖动",
-    screenShareRtt: "RTT",
-    langSwitch: "English",
-  },
-  en: {
-    themeSystem: "System theme",
-    themeLight: "Light theme",
-    themeDark: "Dark theme",
-    switchToLightTheme: "Switch to light theme",
-    switchToDarkTheme: "Switch to dark theme",
-    browserWorkspace: "Browser voice workspace",
-    secureGateway: "Secure voice gateway",
-    adminConsole: "Admin console",
-    currentVersion: "Current version",
-    errorCode: "Error code",
-    viewChangelog: "View changelog",
-    notConfigured: "The WebSpeak TeamSpeak target has not been configured.",
-    configureNow: "Open admin console",
-    privateAudio: "Private community audio",
-    joinLine1: "Connect to your server,",
-    joinLine2: "start the conversation.",
-    joinDescription: "No TeamSpeak client installation required. Open your browser and join a voice channel with low-latency audio built for conversation.",
-    highQuality: "High quality audio",
-    opusAudio: "Low-latency Opus transport",
-    secureJoin: "Secure join",
-    inviteProtected: "Invite link protects your server",
-    realtime: "Real-time presence",
-    membersSync: "Channel members stay in sync",
-    privateServer: "Private voice server",
-    mainNav: "Main navigation",
-    memberVolume: "Member volume",
-    joinServer: "JOIN YOUR SERVER",
-    welcomeBack: "Welcome back",
-    joinLead: "Choose a nickname and the channel to enter.",
-    visitorCount: "You are visitor No. {{count}}",
-    visitorTotal: "{{count}} total visitors",
-    serverAddress: "TeamSpeak server address",
-    serverAddressPlaceholder: "e.g. ts.example.com or 127.0.0.1",
-    serverPort: "Voice port",
-    serverPortPlaceholder: "9987",
-    serverAddressHint: "This is the TeamSpeak address and port reached by the gateway, not a direct browser connection.",
-    relayAcceleration: "Connection relay",
-    directConnection: "Direct TeamSpeak connection",
-    relayAccelerationHint: "Choose a configured relay when the direct path is unstable or blocked.",
-    nickname: "Your nickname",
-    nicknamePlaceholder: "e.g. Alex Rivera",
-    targetChannel: "Target channel",
-    optional: "Optional",
-    emptyDefault: "Leave empty to use the default channel",
-    rememberIdentity: "Remember this TeamSpeak identity on this device",
-    rememberIdentityHint: "Stored only on this device and reused on the next connection.",
-    rememberIdentityConcurrentWarning: "Only one connection can use this identity in the same browser. Clear this option for a second connection or use another browser.",
-    identityOptions: "Device identity options",
-    localPersistenceUnavailable: "Persistent browser storage is unavailable; this session will use an ephemeral identity.",
-    favoriteServers: "Favorites",
-    recentServers: "Recent servers",
-    saveFavorite: "Save favorite",
-    removeFavorite: "Remove favorite",
-    savedFavoriteToast: "Saved to favorites",
-    removedFavoriteToast: "Removed from favorites",
-    clearLocalData: "Clear local data",
-    clearLocalDataConfirm: "Clear this device's identity, favorites, recent servers, and audio preferences?",
-    localDataCleared: "Local data cleared",
-    connecting: "Connecting…",
-    enterVoice: "Enter voice space",
-    connectionAuthorized: "Connection details are used only for this voice session",
-    githubRepository: "GitHub repository",
-    qqGroup: "QQ group",
-    qqGroupQrAlt: "QQ group QR code",
-    qqJoinDirect: "Or join directly via the group link",
-    joinQqGroup: "Join the QQ group",
-    bilibiliProfile: "Bilibili profile",
-    browserSupport: "Chrome / Edge 94+",
-    teamSpeakClient: "TeamSpeak browser client",
-    home: "Home",
-    activity: "Activity",
-    server: "Servers",
-    discover: "Discover",
-    downloads: "Downloads",
-    help: "Help",
-    needHelp: "Need help? Contact your server administrator",
-    serverOptions: "More server options",
-    online: "Online",
-    audioSettings: "Audio settings",
-    overallVolume: "Master volume",
-    muteOutput: "Mute all audio",
-    unmuteOutput: "Restore audio",
-    desktopAudioControls: "Audio controls",
-    desktopAudioHint: "Hover an icon to adjust volume",
-    startAccompaniment: "Share accompaniment",
-    stopAccompaniment: "Stop accompaniment",
-    accompanimentStarted: "Accompaniment sharing started",
-    accompanimentStopped: "Accompaniment sharing stopped",
-    accompanimentActive: "Accompaniment sharing",
-    accompanimentNeedsWebRtc: "Accompaniment requires WebRTC",
-    accompanimentNoAudio: "The selected source has no shareable audio. Select it again and enable audio sharing",
-    accompanimentPermissionDenied: "Could not access accompaniment audio. Allow screen sharing and enable audio sharing",
-    accompanimentUnsupported: "This browser does not support accompaniment sharing",
-    screenShare: "Screen sharing",
-    screenShareTitle: "Screen sharing",
-    startScreenShare: "Share screen",
-    screenShareStarting: "Starting live stream",
-    stopScreenShare: "Stop sharing",
-    sharingScreen: "Live",
-    watchingScreenShare: "Watching",
-    watchScreenShare: "Watch screen",
-    leaveScreenShare: "Stop watching",
-    screenShareVolume: "Share volume",
-    browserSource: "Browser source",
-    teamSpeakSource: "TeamSpeak client source",
-    sharedAudio: "with shared audio",
-    noScreenShares: "No active screen shares",
-    directP2POnly: "Direct P2P · STUN for public candidate discovery",
-    screenShareNativeUnavailable: "Native TeamSpeak screen sharing is not available to web viewers yet",
-    screenShareExit: "Exit viewer",
-    screenShareConnecting: "Connecting to screen share",
-    screenShareViewers: "Current viewers",
-    screenShareFullscreen: "Fullscreen",
-    screenShareExitFullscreen: "Exit fullscreen",
-    screenShareSettings: "Share settings",
-    screenShareSettingsHint: "Adjust output quality before sharing",
-    screenShareResolution: "Output resolution",
-    screenShareResolutionSource: "Source resolution",
-    screenShareResolution720p: "720p (up to 1280 × 720)",
-    screenShareResolution1080p: "1080p (up to 1920 × 1080)",
-    screenShareFrameRate: "Frame rate limit",
-    screenShareSettingsNote: "These settings apply the next time you start sharing",
-    watching: "Watching",
-    serverPassword: "Server password",
-    optionalPassword: "Leave blank if not required",
-    serverPasswordTitle: "Server password required",
-    serverPasswordPrompt: "Enter server password",
-    serverPasswordRequiredLead: "This TeamSpeak server requires a password. Enter it and try again.",
-    serverPasswordInvalidLead: "The server password was rejected. Enter it again and retry.",
-    serverPasswordRetry: "Enter password and retry",
-    serverPasswordRetryPlaceholder: "Enter the server password",
-    switchChannel: "Switch channel",
-    searchChannels: "Search channels",
-    voiceChannels: "Voice channels",
-    peopleOnline: "{{count}} online",
-    channelPreparing: "Channel list is preparing",
-    channelPreparingLead: "Voice still works when the server does not expose a channel directory.",
-    reload: "Reload",
-    quickActions: "Quick actions",
-    inviteFriends: "Invite friends",
-    audioAndMic: "Audio & microphone",
-    stableConnection: "Stable connection",
-    websocket: "WebSocket",
-    serverBreadcrumb: "Server",
-    copyInvite: "Copy invite link",
-    exit: "Exit",
-    live: "LIVE",
-    voiceSpace: "Voice space",
-    roomDescription: "Stay in clear, natural conversation with everyone in this channel.",
-    membersOnline: "{{count}} members online",
-    encrypted: "Encrypted connection",
-    voiceActivity: "VOICE ACTIVITY",
-    speakingNow: "Speaking now",
-    onlineShort: "{{count}} online",
-    you: "You",
-    selfSuffix: " (You)",
-    connected: "Connected",
-    speaking: "Speaking…",
-    connectedYou: "Connected · you",
-    waitingForMembers: "Waiting for people to join",
-    prepareMicrophone: "You can get your microphone ready.",
-    moreMembers: "More members",
-    viewLeft: "See them on the left",
-    textChannel: "TEXT CHANNEL",
-    channelChat: "{{channel}} chat",
-    messageCount: "{{count}} messages",
-    chatStart: "This is the beginning of the chat",
-    chatStartLead: "Send a message and say hello to your channel friends.",
-    chatTabs: "Chat tabs",
-    serverChat: "Server",
-    privateMessage: "Private message",
-    privateMessagePlaceholder: "Message privately…",
-    serverMessagePlaceholder: "Message the server…",
-    channelPasswordPrompt: "Enter the channel password",
-    channelPasswordTitle: "Enter protected channel",
-    channelPasswordLead: "This channel requires a password to join.",
-    channelPasswordPlaceholder: "Channel password",
-    channelPasswordOptional: "Enter it if the target channel is protected",
-    channelPasswordSubmit: "Enter channel",
-    channelPasswordCancel: "Cancel",
-    channelPasswordRetry: "That password was not accepted. Try again.",
-    privateChatStart: "This is the beginning of the private chat",
-    privateChatStartLead: "Send a private message.",
-    eventLog: "Event log",
-    eventCount: "{{count}} events",
-    noEvents: "No server events yet",
-    noEventsLead: "Channel and member changes will appear here.",
-    available: "Available",
-    away: "Away",
-    awayPrompt: "Away message (optional)",
-    poke: "Poke",
-    pokedYou: "poked you",
-    pokeMessagePrompt: "Poke message (optional)",
-    pokeSent: "Poke sent",
-    copyNickname: "Copy nickname",
-    moveMember: "Move to channel",
-    moveMemberMenu: "Move to",
-    moveMemberMyChannel: "My channel",
-    moveMemberNoChannels: "No available channels",
-    moveMemberTitle: "Move {{member}}",
-    moveMemberLead: "Choose a target channel. TeamSpeak will enforce your move permissions.",
-    moveMemberTarget: "Target channel",
-    moveMemberChooseChannel: "Choose a target channel",
-    moveMemberSubmit: "Move member",
-    moveMemberSuccess: "Member moved",
-    movePermissionDenied: "You do not have permission to move members",
-    copiedNickname: "Nickname copied",
-    attachmentUnavailable: "Attachments unavailable",
-    emojiUnavailable: "Emoji unavailable",
-    sendMessagePlaceholder: "Message the channel…",
-    send: "Send",
-    muteMic: "Mute mic",
-    unmuteMic: "Unmute mic",
-    microphoneActive: "Microphone on",
-    microphoneMuted: "Microphone off",
-    microphoneActiveHint: "When muted, no microphone audio is sent to the server",
-    microphoneMutedHint: "Your microphone is muted and other members cannot hear you",
-    sending: "Sending",
-    exitVoice: "Leave voice",
-    people: "People",
-    searchMembers: "Search members",
-    onlineGroup: "ONLINE — {{count}}",
-    yourDevice: "Your device",
-    memberOnline: "Online",
-    memberStates: "Member states",
-    inputMuted: "Microphone muted",
-    outputMuted: "Output muted",
-    channelCommander: "Channel commander",
-    noMatchingMembers: "No matching members",
-    noMembersInChannel: "No members in this channel",
-    volumeTip: "Drag a member slider to adjust their volume just for you.",
-    moreMemberOptions: "More member options",
-    connectedToast: "You are connected to this server",
-    connectionInterrupted: "Connection interrupted",
-    reconnectingAttempt: "Reconnecting… Attempt {{attempt}}",
-    reconnectFailed: "Could not restore the connection",
-    reconnectNow: "Reconnect now",
-    back: "Back",
-    volumeToast: "Adjust each member's volume from the list",
-    copiedToast: "Invite link copied",
-    copyFailedToast: "Copy failed. Copy the browser address manually",
-    leftToast: "You left the voice space",
-    focusedToast: "This version is focused on the voice workspace",
-    settings: "Settings",
-    profile: "Profile",
-    privacy: "Privacy",
-    notifications: "Notifications",
-    browserClient: "Browser client",
-    audioConfiguration: "Audio configuration",
-    inputDevice: "Input device",
-    microphone: "Microphone",
-    microphoneState: "Microphone state",
-    defaultMicrophone: "Default browser microphone",
-    microphoneNumber: "Microphone {{index}}",
-    speakerNumber: "Speaker {{index}}",
-    permission: "Permission",
-    permissionUnknown: "Not requested",
-    permissionGranted: "Granted",
-    permissionDenied: "Denied",
-    inputVolume: "Input volume",
-    voxThreshold: "Voice activation threshold",
-    micLevel: "Mic level",
-    microphoneTest: "Microphone test",
-    stopTest: "Stop test",
-    startTest: "Start test",
-    localMicTestHint: "Local test: the recording is played in this browser and never sent to TeamSpeak.",
-    silence: "Silence",
-    optimal: "Optimal",
-    loud: "Loud",
-    outputDevice: "Output device",
-    speakers: "Speakers / headphones",
-    defaultOutput: "Default browser output",
-    outputVolume: "Output volume",
-    outputDeviceUnsupported: "Output device selection is not supported by this browser. Using the default output device.",
-    notificationVolume: "Notification volume",
-    audioStatus: "Audio status",
-    audioReady: "Audio ready",
-    noiseSuppression: "Browser noise suppression",
-    noiseSuppressionHint: "Process audio in the browser",
-    rnnoise: "RNNoise suppression",
-    echoCancellation: "Echo cancellation",
-    autoGainControl: "Automatic gain control",
-    processingEnabled: "Enabled",
-    processingDisabled: "Disabled",
-    processingUnknown: "Not reported by browser",
-    audioUnavailable: "Audio unavailable (microphone failure)",
-    microphoneUnavailable: "Microphone unavailable — others cannot hear you",
-    audioSuspended: "Audio paused by the browser",
-    audioUnknown: "Not initialized",
-    audioPrivacy: "WebSpeak processes audio in the browser's secure context and does not save recordings.",
-    mobileNavigation: "Mobile navigation",
-    mobileChannels: "Channels",
-    mobileChat: "Chat",
-    mobileVoice: "Voice",
-    mobileMore: "More",
-    whisperTargets: "Whisper targets",
-    setWhisperTarget: "Set as whisper target",
-    removeWhisperTarget: "Remove whisper target",
-    clearWhisperTargets: "Clear targets",
-    whisperHoldToTalk: "Hold to whisper",
-    releaseWhisper: "Release to stop whispering",
-    cancel: "Cancel",
-    saveChanges: "Save changes",
-    close: "Close",
-    done: "Done",
-    voiceLobby: "Voice lobby",
-    languageMenu: "Language",
-    networkPerformance: "Network performance",
-    networkPerformanceHint: "Live probes from the browser to WebSpeak and TeamSpeak",
-    browser: "Browser",
-    webSpeakGateway: "WebSpeak",
-    teamSpeakServer: "TeamSpeak",
-    browserToGateway: "Browser → WebSpeak",
-    gatewayToTeamSpeak: "WebSpeak → TeamSpeak",
-    packetLoss: "Packet loss",
-    measuring: "Measuring…",
-    measureComplete: "Monitoring continuously (updates every 3s)",
-    measureNow: "Measure now",
-    measureUnavailable: "Available after connecting",
-    webrtcStats: "Screen-share WebRTC",
-    webrtcStatsHint: "Actual media state sampled every second",
-    screenShareCapture: "Capture",
-    screenShareSending: "Sending to viewer",
-    screenShareReceiving: "Receiving from sharer",
-    screenShareDroppedFrames: "dropped",
-    screenShareJitter: "jitter",
-    screenShareRtt: "RTT",
-    langSwitch: "中文",
-  },
-};
-
-translations.de = {
-  ...translations.en,
-  themeSystem: "Systemdesign",
-  themeLight: "Helles Design",
-  themeDark: "Dunkles Design",
-  switchToLightTheme: "Zum hellen Design wechseln",
-  switchToDarkTheme: "Zum dunklen Design wechseln",
-  browserWorkspace: "Sprachbereich im Browser",
-  secureGateway: "Sicheres Sprach-Gateway",
-  adminConsole: "Administrationskonsole",
-  currentVersion: "Aktuelle Version",
-  errorCode: "Fehlercode",
-  viewChangelog: "Änderungsprotokoll ansehen",
-  notConfigured: "Das TeamSpeak-Ziel von WebSpeak wurde noch nicht konfiguriert.",
-  configureNow: "Administrationskonsole öffnen",
-  privateAudio: "Private Community-Sprachumgebung",
-  joinLine1: "Verbinde dich mit deinem Server,",
-  joinLine2: "und beginne das Gespräch.",
-  joinDescription: "Keine Installation des TeamSpeak-Clients nötig. Öffne den Browser und tritt einem Sprachkanal bei – leichtgewichtig und mit geringer Latenz.",
-  highQuality: "Hochwertige Sprache",
-  opusAudio: "Opus-Übertragung mit geringer Latenz",
-  secureJoin: "Sicher beitreten",
-  inviteProtected: "Einladungslink schützt deinen Server",
-  realtime: "Präsenz in Echtzeit",
-  membersSync: "Kanalmitglieder bleiben synchron",
-  privateServer: "Privater Sprachserver",
-  mainNav: "Hauptnavigation",
-  memberVolume: "Mitgliedslautstärke",
-  joinServer: "DEINEM SERVER BEITRETEN",
-  welcomeBack: "Willkommen zurück",
-  joinLead: "Wähle einen Namen und den Kanal, dem du beitreten möchtest.",
-  visitorCount: "Du bist Besucher Nr. {{count}}",
-  visitorTotal: "Insgesamt {{count}} Besucher",
-  serverAddress: "TeamSpeak-Serveradresse",
-  serverAddressPlaceholder: "z. B. ts.example.com oder 127.0.0.1",
-  serverPort: "Sprachport",
-  serverPortPlaceholder: "9987",
-  serverAddressHint: "Dies ist die TeamSpeak-Adresse und der Port, die vom Gateway erreicht werden – keine direkte Browseradresse.",
-   relayAcceleration: "Verbindungs-Relay",
-   directConnection: "Direkte TeamSpeak-Verbindung",
-   relayAccelerationHint: "Wähle einen konfigurierten Relay, wenn die direkte Verbindung instabil ist oder abgelehnt wird.",
-  nickname: "Dein Name",
-  nicknamePlaceholder: "z. B. Alex Rivera",
-  targetChannel: "Zielkanal",
-  optional: "Optional",
-  emptyDefault: "Leer lassen, um den Standardkanal zu verwenden",
-  rememberIdentity: "Diese TeamSpeak-Identität auf diesem Gerät speichern",
-  rememberIdentityHint: "Wird nur auf diesem Gerät gespeichert und bei der nächsten Verbindung wiederverwendet.",
-  rememberIdentityConcurrentWarning: "Dieselbe Identität kann in einem Browser nur eine Verbindung gleichzeitig verwenden. Deaktiviere die Option für eine zweite Verbindung oder nutze einen anderen Browser.",
-  identityOptions: "Identitätsoptionen des Geräts",
-  localPersistenceUnavailable: "Dauerhafter Browserspeicher ist nicht verfügbar; diese Sitzung verwendet eine temporäre Identität.",
-  favoriteServers: "Favoriten",
-  recentServers: "Zuletzt verwendet",
-  saveFavorite: "Als Favorit speichern",
-  removeFavorite: "Aus Favoriten entfernen",
-  savedFavoriteToast: "Als Favorit gespeichert",
-  removedFavoriteToast: "Aus Favoriten entfernt",
-  clearLocalData: "Lokale Daten löschen",
-  clearLocalDataConfirm: "Identität, Favoriten, letzte Verbindungen und Audioeinstellungen dieses Geräts löschen?",
-  localDataCleared: "Lokale Daten gelöscht",
-  connecting: "Verbindung wird hergestellt…",
-  enterVoice: "Sprachbereich betreten",
-  connectionAuthorized: "Verbindungsdaten werden nur für diese Sprachsitzung verwendet",
-  githubRepository: "GitHub-Repository",
-  qqGroup: "QQ-Gruppe",
-  qqGroupQrAlt: "QR-Code der QQ-Gruppe",
-  qqJoinDirect: "Oder direkt über den Gruppenlink beitreten",
-  joinQqGroup: "QQ-Gruppe beitreten",
-  bilibiliProfile: "Bilibili-Profil",
-  browserSupport: "Chrome / Edge 94+",
-  teamSpeakClient: "TeamSpeak-Browserclient",
-  home: "Startseite",
-  activity: "Aktivität",
-  server: "Server",
-  discover: "Entdecken",
-  downloads: "Downloads",
-  help: "Hilfe",
-  needHelp: "Brauchst du Hilfe? Wende dich an den Serveradministrator.",
-  serverOptions: "Weitere Serveroptionen",
-  online: "Online",
-  audioSettings: "Audioeinstellungen",
-  overallVolume: "Gesamtlautstärke",
-  muteOutput: "Alle Töne stummschalten",
-  unmuteOutput: "Ton wiederherstellen",
-  desktopAudioControls: "Audiosteuerung",
-  desktopAudioHint: "Bewege den Zeiger über ein Symbol, um die Lautstärke anzupassen",
-  startAccompaniment: "Begleitung teilen",
-  stopAccompaniment: "Begleitung stoppen",
-  accompanimentStarted: "Begleitung wird geteilt",
-  accompanimentStopped: "Begleitung beendet",
-  accompanimentActive: "Begleitung aktiv",
-  accompanimentNeedsWebRtc: "Die Begleitungsfunktion benötigt WebRTC.",
-  accompanimentNoAudio: "Die ausgewählte Quelle enthält kein teilbares Audio. Wähle sie erneut und aktiviere die Audiofreigabe.",
-  accompanimentPermissionDenied: "Begleitungs-Audio konnte nicht abgerufen werden. Erlaube die Bildschirmfreigabe und aktiviere die Audiofreigabe.",
-  accompanimentUnsupported: "Dieser Browser unterstützt das Teilen von Begleitung nicht.",
-  startScreenShare: "Bildschirm teilen",
-  screenShareStarting: "Live-Stream wird gestartet",
-  stopScreenShare: "Freigabe beenden",
-  sharingScreen: "LIVE",
-  watchScreenShare: "Bildschirm ansehen",
-  watching: "Wird angesehen",
-  screenShareVolume: "Freigabelautstärke",
-  screenShareNativeUnavailable: "Native TeamSpeak-Bildschirmfreigabe ist für Web-Zuschauer noch nicht verfügbar",
-  screenShareExit: "Ansicht verlassen",
-  screenShareConnecting: "Bildschirmfreigabe wird verbunden",
-  screenShareViewers: "Aktuelle Zuschauer",
-  screenShareFullscreen: "Vollbild",
-  screenShareExitFullscreen: "Vollbild verlassen",
-  screenShareSettings: "Freigabeeinstellungen",
-  screenShareSettingsHint: "Ausgabequalität vor dem Teilen anpassen",
-  screenShareResolution: "Ausgabeauflösung",
-  screenShareResolutionSource: "Quellauflösung",
-  screenShareResolution720p: "720p (max. 1280 × 720)",
-  screenShareResolution1080p: "1080p (max. 1920 × 1080)",
-  screenShareFrameRate: "Bildratenlimit",
-  screenShareSettingsNote: "Die Einstellungen gelten beim nächsten Start der Freigabe",
-  serverPassword: "Serverpasswort",
-  optionalPassword: "Leer lassen, wenn kein Passwort erforderlich ist",
-  serverPasswordTitle: "Serverpasswort erforderlich",
-  serverPasswordPrompt: "Serverpasswort eingeben",
-  serverPasswordRequiredLead: "Dieser TeamSpeak-Server benötigt ein Passwort. Gib es ein und versuche es erneut.",
-  serverPasswordInvalidLead: "Das Serverpasswort wurde abgelehnt. Gib es erneut ein und versuche es noch einmal.",
-  serverPasswordRetry: "Passwort eingeben und erneut versuchen",
-  serverPasswordRetryPlaceholder: "Serverpasswort eingeben",
-  switchChannel: "Kanal wechseln",
-  searchChannels: "Kanäle suchen",
-  voiceChannels: "Sprachkanäle",
-  peopleOnline: "{{count}} online",
-  channelPreparing: "Kanalliste wird vorbereitet",
-  channelPreparingLead: "Auch ohne Kanalliste des Servers funktioniert die Sprachverbindung.",
-  reload: "Neu laden",
-  quickActions: "Schnellaktionen",
-  inviteFriends: "Freunde einladen",
-  audioAndMic: "Audio und Mikrofon",
-  stableConnection: "Stabile Verbindung",
-  websocket: "WebSocket",
-  serverBreadcrumb: "Server",
-  copyInvite: "Einladungslink kopieren",
-  exit: "Beenden",
-  live: "LIVE",
-  voiceSpace: "Sprachbereich",
-  roomDescription: "Bleibe mit allen Mitgliedern dieses Kanals klar und natürlich im Gespräch.",
-  membersOnline: "{{count}} Mitglieder online",
-  encrypted: "Verschlüsselte Verbindung",
-  voiceActivity: "SPRACHAKTIVITÄT",
-  speakingNow: "Spricht gerade",
-  onlineShort: "{{count}} online",
-  you: "Du",
-  selfSuffix: " (Du)",
-  connected: "Verbunden",
-  speaking: "Spricht…",
-  connectedYou: "Verbunden · du",
-  waitingForMembers: "Warte auf weitere Mitglieder",
-  prepareMicrophone: "Du kannst dein Mikrofon hier vorbereiten.",
-  moreMembers: "Weitere Mitglieder",
-  viewLeft: "Links anzeigen",
-  textChannel: "TEXTKANAL",
-  channelChat: "Chat in {{channel}}",
-  messageCount: "{{count}} Nachrichten",
-  chatStart: "Dies ist der Anfang des Chats",
-  chatStartLead: "Sende eine Nachricht und begrüße deine Kanalmitglieder.",
-  chatTabs: "Chat-Tabs",
-  serverChat: "Server",
-  privateMessage: "Private Nachricht",
-  privateMessagePlaceholder: "Private Nachricht senden…",
-  serverMessagePlaceholder: "Nachricht an den Server senden…",
-  channelPasswordPrompt: "Kanalpasswort eingeben",
-  channelPasswordTitle: "Geschützten Kanal betreten",
-  channelPasswordLead: "Für diesen Kanal ist ein Passwort erforderlich.",
-  channelPasswordPlaceholder: "Kanalpasswort",
-  channelPasswordOptional: "Falls der Zielkanal geschützt ist",
-  channelPasswordSubmit: "Kanal betreten",
-  channelPasswordCancel: "Abbrechen",
-  channelPasswordRetry: "Das Passwort wurde abgelehnt. Bitte erneut versuchen.",
-  privateChatStart: "Dies ist der Anfang des privaten Chats",
-  privateChatStartLead: "Sende eine private Nachricht.",
-  eventLog: "Ereignisprotokoll",
-  eventCount: "{{count}} Ereignisse",
-  noEvents: "Noch keine Serverereignisse",
-  noEventsLead: "Änderungen an Kanälen und Mitgliedern werden hier angezeigt.",
-  available: "Verfügbar",
-  away: "Abwesend",
-  awayPrompt: "Abwesenheitsnachricht (optional)",
-  poke: "Anstupsen",
-  pokedYou: "hat dich angestupst",
-  pokeMessagePrompt: "Anstupsnachricht (optional)",
-  pokeSent: "Anstupser gesendet",
-  copyNickname: "Namen kopieren",
-  moveMember: "In Kanal verschieben",
-  moveMemberMenu: "Verschieben nach",
-  moveMemberMyChannel: "Mein Kanal",
-  moveMemberNoChannels: "Keine verfügbaren Kanäle",
-  moveMemberTitle: "{{member}} verschieben",
-  moveMemberLead: "Wähle einen Zielkanal. TeamSpeak prüft deine Verschiebeberechtigung.",
-  moveMemberTarget: "Zielkanal",
-  moveMemberChooseChannel: "Zielkanal auswählen",
-  moveMemberSubmit: "Mitglied verschieben",
-  moveMemberSuccess: "Mitglied verschoben",
-  movePermissionDenied: "Du hast keine Berechtigung, Mitglieder zu verschieben",
-  copiedNickname: "Name kopiert",
-  attachmentUnavailable: "Anhänge nicht verfügbar",
-  emojiUnavailable: "Emojis nicht verfügbar",
-  sendMessagePlaceholder: "Nachricht an die Kanalmitglieder…",
-  send: "Senden",
-  muteMic: "Mikrofon stummschalten",
-  unmuteMic: "Mikrofon einschalten",
-  microphoneActive: "Mikrofon eingeschaltet",
-  microphoneMuted: "Mikrofon ausgeschaltet",
-  microphoneActiveHint: "Bei ausgeschaltetem Mikrofon wird kein Mikrofonton an den Server gesendet.",
-  microphoneMutedHint: "Dein Mikrofon ist ausgeschaltet; andere Mitglieder können dich nicht hören.",
-  sending: "Wird gesendet",
-  exitVoice: "Sprachbereich verlassen",
-  people: "Mitglieder",
-  searchMembers: "Mitglieder suchen",
-  onlineGroup: "Online — {{count}}",
-  yourDevice: "Dein Gerät",
-  memberOnline: "Online",
-  memberStates: "Mitgliederstatus",
-  inputMuted: "Mikrofon deaktiviert",
-  outputMuted: "Lautsprecher deaktiviert",
-  channelCommander: "Kanaladministrator",
-  noMatchingMembers: "Keine passenden Mitglieder gefunden",
-  noMembersInChannel: "Keine Mitglieder in diesem Kanal",
-  volumeTip: "Ziehe den Regler rechts neben einem Mitglied, um dessen Lautstärke einzeln anzupassen.",
-  moreMemberOptions: "Weitere Mitgliederoptionen",
-  connectedToast: "Mit diesem Server verbunden",
-  connectionInterrupted: "Verbindung unterbrochen, Wiederherstellung wird versucht…",
-  reconnectingAttempt: "Verbindungsversuch {{attempt}}",
-  reconnectFailed: "Verbindung konnte nicht wiederhergestellt werden",
-  reconnectNow: "Jetzt neu verbinden",
-  back: "Zurück",
-  volumeToast: "Die Lautstärke jedes Mitglieds kann separat angepasst werden.",
-  copiedToast: "Einladungslink kopiert",
-  copyFailedToast: "Kopieren fehlgeschlagen. Kopiere die Browseradresse manuell.",
-  leftToast: "Sprachbereich sicher verlassen",
-  focusedToast: "Diese Version konzentriert sich auf den Sprachbereich.",
-  settings: "Einstellungen",
-  profile: "Profil",
-  privacy: "Datenschutz",
-  notifications: "Benachrichtigungen",
-  browserClient: "Browserclient",
-  audioConfiguration: "Audiokonfiguration",
-  inputDevice: "Eingabegerät",
-  microphone: "Mikrofon",
-  microphoneState: "Mikrofonstatus",
-  defaultMicrophone: "Standardmikrofon des Browsers",
-  microphoneNumber: "Mikrofon {{index}}",
-  speakerNumber: "Lautsprecher {{index}}",
-  permission: "Berechtigung",
-  permissionUnknown: "Noch nicht angefragt",
-  permissionGranted: "Erlaubt",
-  permissionDenied: "Abgelehnt",
-  inputVolume: "Eingangslautstärke",
-  voxThreshold: "Sprachaktivierungsschwelle",
-  micLevel: "Mikrofonlautstärke",
-  microphoneTest: "Mikrofontest",
-  stopTest: "Test stoppen",
-  startTest: "Test starten",
-  localMicTestHint: "Lokaler Test: Die Aufnahme wird nur im Browser wiedergegeben und nicht an TeamSpeak gesendet.",
-  silence: "Ruhig",
-  optimal: "Optimal",
-  loud: "Laut",
-  outputDevice: "Ausgabegerät",
-  speakers: "Lautsprecher / Kopfhörer",
-  defaultOutput: "Standardausgabe des Browsers",
-  outputVolume: "Ausgabelautstärke",
-  outputDeviceUnsupported: "Dieser Browser unterstützt keine Auswahl des Ausgabegeräts. Die Standardausgabe wird verwendet.",
-  notificationVolume: "Benachrichtigungslautstärke",
-  audioStatus: "Audiostatus",
-  audioReady: "Audio bereit",
-  noiseSuppression: "Browser-Geräuschunterdrückung",
-  noiseSuppressionHint: "Verarbeitung bei der Aufnahme im Browser",
-  rnnoise: "RNNoise-Geräuschunterdrückung",
-  echoCancellation: "Echounterdrückung",
-  autoGainControl: "Automatische Verstärkungsregelung",
-  processingEnabled: "Aktiviert",
-  processingDisabled: "Deaktiviert",
-  processingUnknown: "Vom Browser nicht gemeldet",
-  audioUnavailable: "Audio nicht verfügbar (Mikrofonfehler)",
-  microphoneUnavailable: "Mikrofon nicht verfügbar – andere können dich nicht hören",
-  audioSuspended: "Audio wurde vom Browser pausiert",
-  audioUnknown: "Nicht initialisiert",
-  audioPrivacy: "WebSpeak verarbeitet Audio im sicheren Browserkontext und speichert keine Aufnahmen.",
-  mobileNavigation: "Mobile Navigation",
-  mobileChannels: "Kanäle",
-  mobileChat: "Chat",
-  mobileVoice: "Sprache",
-  mobileMore: "Mehr",
-  whisperTargets: "Flüsterziele",
-  setWhisperTarget: "Als Flüsterziel festlegen",
-  removeWhisperTarget: "Flüsterziel entfernen",
-  clearWhisperTargets: "Ziele löschen",
-  whisperHoldToTalk: "Zum Flüstern gedrückt halten",
-  releaseWhisper: "Loslassen, um das Flüstern zu beenden",
-  cancel: "Abbrechen",
-  saveChanges: "Änderungen speichern",
-  close: "Schließen",
-  done: "Fertig",
-    voiceLobby: "Sprachlobby",
-    languageMenu: "Sprache",
-    networkPerformance: "Netzwerkleistung",
-    networkPerformanceHint: "Live-Messung vom Browser über WebSpeak zu TeamSpeak",
-    browser: "Browser",
-    webSpeakGateway: "WebSpeak",
-    teamSpeakServer: "TeamSpeak",
-    browserToGateway: "Browser → WebSpeak",
-    gatewayToTeamSpeak: "WebSpeak → TeamSpeak",
-    packetLoss: "Paketverlust",
-    measuring: "Wird gemessen…",
-    measureComplete: "Laufende Messung (alle 3 Sekunden)",
-    measureNow: "Jetzt messen",
-    measureUnavailable: "Nach der Verbindung verfügbar",
-    webrtcStats: "WebRTC der Bildschirmfreigabe",
-    webrtcStatsHint: "Tatsächlicher Medienstatus, jede Sekunde erfasst",
-    screenShareCapture: "Aufnahme",
-    screenShareSending: "An Zuschauer senden",
-    screenShareReceiving: "Vom Freigebenden empfangen",
-    screenShareDroppedFrames: "verloren",
-    screenShareJitter: "Jitter",
-    screenShareRtt: "RTT",
-  langSwitch: "中文",
-};
-
-translations.ru = {
-  ...translations.en,
-  themeSystem: "Системная тема",
-  themeLight: "Светлая тема",
-  themeDark: "Тёмная тема",
-  switchToLightTheme: "Включить светлую тему",
-  switchToDarkTheme: "Включить тёмную тему",
-  browserWorkspace: "Голосовое пространство в браузере",
-  secureGateway: "Безопасный голосовой шлюз",
-  adminConsole: "Панель администратора",
-  currentVersion: "Текущая версия",
-  errorCode: "Код ошибки",
-  viewChangelog: "Открыть журнал изменений",
-  notConfigured: "Цель TeamSpeak ещё не настроена в WebSpeak.",
-  configureNow: "Открыть панель администратора",
-  privateAudio: "Приватное голосовое сообщество",
-  joinLine1: "Подключитесь к серверу,",
-  joinLine2: "и начните общение.",
-  joinDescription: "Клиент TeamSpeak устанавливать не нужно. Откройте браузер и присоединитесь к голосовому каналу с низкой задержкой.",
-  overallVolume: "Общая громкость",
-  moveMember: "Переместить в канал",
-  moveMemberMenu: "Переместить в",
-  moveMemberMyChannel: "Мой канал",
-  moveMemberNoChannels: "Нет доступных каналов",
-  moveMemberTitle: "Переместить: {{member}}",
-  moveMemberLead: "Выберите канал. TeamSpeak проверит ваши права на перемещение.",
-  moveMemberTarget: "Целевой канал",
-  moveMemberChooseChannel: "Выберите целевой канал",
-  moveMemberSubmit: "Переместить участника",
-  moveMemberSuccess: "Участник перемещён",
-  movePermissionDenied: "У вас нет права перемещать участников",
-  channelPasswordOptional: "Если целевой канал защищён паролем",
-  inputVolume: "Громкость микрофона",
-  desktopAudioControls: "Управление звуком",
-  desktopAudioHint: "Наведите на значок, чтобы изменить громкость",
-  startScreenShare: "Начать трансляцию",
-  screenShareStarting: "Запуск трансляции",
-  stopScreenShare: "Остановить трансляцию",
-  sharingScreen: "В эфире",
-  watchScreenShare: "Смотреть трансляцию экрана",
-  watching: "Смотрю",
-  screenShareVolume: "Громкость трансляции",
-  screenShareNativeUnavailable: "Демонстрация экрана TeamSpeak пока недоступна для веб-просмотра",
-  screenShareExit: "Выйти из просмотра",
-  screenShareConnecting: "Подключение к трансляции экрана",
-  screenShareViewers: "Текущие зрители",
-  screenShareFullscreen: "На весь экран",
-  screenShareExitFullscreen: "Выйти из полноэкранного режима",
-  screenShareSettings: "Настройки трансляции",
-  screenShareSettingsHint: "Настройте качество перед началом трансляции",
-  screenShareResolution: "Выходное разрешение",
-  screenShareResolutionSource: "Исходное разрешение",
-  screenShareResolution720p: "720p (до 1280 × 720)",
-  screenShareResolution1080p: "1080p (до 1920 × 1080)",
-  screenShareFrameRate: "Ограничение FPS",
-  screenShareSettingsNote: "Настройки применятся при следующем запуске трансляции",
-  noiseSuppression: "Шумоподавление",
-  noiseSuppressionHint: "Обработка звука при захвате в браузере",
-  highQuality: "Качественный звук",
-  opusAudio: "Передача Opus с низкой задержкой",
-  secureJoin: "Безопасное подключение",
-  inviteProtected: "Сервер защищён ссылкой-приглашением",
-  realtime: "Синхронизация в реальном времени",
-  membersSync: "Участники каналов всегда синхронизированы",
-  privateServer: "Приватный голосовой сервер",
-  joinServer: "Войти на сервер",
-  welcomeBack: "С возвращением",
-  joinLead: "Выберите имя и канал для входа.",
-  visitorCount: "Вы {{count}}-й посетитель",
-  visitorTotal: "Всего посетителей: {{count}}",
-  serverAddress: "Адрес сервера TeamSpeak",
-  serverAddressPlaceholder: "например, ts.example.com или 127.0.0.1",
-  serverPort: "Голосовой порт",
-  serverPortPlaceholder: "9987",
-  serverAddressHint: "Это адрес и порт TeamSpeak, к которым обращается шлюз, а не прямое подключение браузера.",
-  relayAcceleration: "Подключение через ретранслятор",
-  directConnection: "Прямое подключение к TeamSpeak",
-  relayAccelerationHint: "Выберите настроенный ретранслятор, если прямой маршрут нестабилен или заблокирован.",
-  nickname: "Ваше имя",
-  nicknamePlaceholder: "например, Alex Rivera",
-  targetChannel: "Целевой канал",
-  optional: "необязательно",
-  emptyDefault: "Оставьте пустым для канала по умолчанию",
-  rememberIdentity: "Запомнить личность TeamSpeak на этом устройстве",
-  rememberIdentityHint: "Хранится только на этом устройстве и используется при следующем подключении.",
-  rememberIdentityConcurrentWarning: "Одна личность может использоваться только одним подключением в этом браузере. Для второго подключения отключите эту опцию или используйте другой браузер.",
-  deviceIdentityOptions: "Настройки личности устройства",
-  enterVoiceSpace: "Войти в голосовое пространство",
-  connectionDetailsPrivate: "Данные подключения используются только для этой голосовой сессии",
-  recentServers: "Недавние серверы",
-  saveFavorite: "Сохранить в избранное",
-  savedFavoriteToast: "Сервер сохранён в избранное",
-  removedFavoriteToast: "Сервер удалён из избранного",
-  clearLocalData: "Очистить локальные данные",
-  clearLocalDataConfirm: "Удалить сохранённое имя, настройки и личность с этого устройства?",
-  localDataCleared: "Локальные данные очищены",
-  languageMenu: "Язык",
-  networkPerformance: "Сетевая производительность",
-  networkPerformanceHint: "Непрерывные измерения от браузера через WebSpeak к TeamSpeak",
-  packetLoss: "Потери пакетов",
-  measuring: "Измерение…",
-  measureComplete: "Мониторинг продолжается (обновление каждые 3 секунды)",
-  measureNow: "Измерить сейчас",
-  measureUnavailable: "Доступно после подключения",
-  webrtcStats: "WebRTC трансляции экрана",
-  webrtcStatsHint: "Фактическое состояние медиапотока, замер каждую секунду",
-  screenShareCapture: "Захват",
-  screenShareSending: "Отправка зрителю",
-  screenShareReceiving: "Получение от ведущего",
-  screenShareDroppedFrames: "пропуски",
-  screenShareJitter: "джиттер",
-  screenShareRtt: "RTT",
-  langSwitch: "中文",
-};
-
-translations.ja = {
-  ...translations.en,
-  themeSystem: "システム設定",
-  themeLight: "ライトテーマ",
-  themeDark: "ダークテーマ",
-  switchToLightTheme: "ライトテーマに切り替え",
-  switchToDarkTheme: "ダークテーマに切り替え",
-  browserWorkspace: "ブラウザ音声ワークスペース",
-  secureGateway: "安全な音声ゲートウェイ",
-  adminConsole: "管理コンソール",
-  currentVersion: "現在のバージョン",
-  errorCode: "エラーコード",
-  viewChangelog: "更新履歴を見る",
-  notConfigured: "WebSpeak の TeamSpeak 接続先がまだ設定されていません。",
-  configureNow: "管理コンソールを開く",
-  privateAudio: "プライベートコミュニティ音声",
-  joinLine1: "サーバーに接続して、",
-  joinLine2: "すぐに会話を始めよう。",
-  joinDescription: "TeamSpeak クライアントのインストールは不要です。ブラウザから低遅延の音声チャンネルに参加できます。",
-  overallVolume: "全体音量",
-  moveMember: "チャンネルへ移動",
-  moveMemberMenu: "移動先",
-  moveMemberMyChannel: "自分のチャンネル",
-  moveMemberNoChannels: "移動できるチャンネルがありません",
-  moveMemberTitle: "{{member}}を移動",
-  moveMemberLead: "移動先を選択してください。TeamSpeak が権限を確認します。",
-  moveMemberTarget: "移動先チャンネル",
-  moveMemberChooseChannel: "移動先を選択",
-  moveMemberSubmit: "メンバーを移動",
-  moveMemberSuccess: "メンバーを移動しました",
-  movePermissionDenied: "メンバーを移動する権限がありません",
-  channelPasswordOptional: "移動先にパスワードがある場合",
-  inputVolume: "マイク音量",
-  desktopAudioControls: "音声コントロール",
-  desktopAudioHint: "アイコンにカーソルを合わせて音量を調整",
-  startScreenShare: "画面を共有",
-  screenShareStarting: "配信を開始中",
-  stopScreenShare: "共有を停止",
-  sharingScreen: "ライブ中",
-  watchScreenShare: "画面共有を見る",
-  watching: "視聴中",
-  screenShareVolume: "共有音量",
-  screenShareNativeUnavailable: "TeamSpeak のネイティブ画面共有は現在ウェブで視聴できません",
-  screenShareExit: "視聴を終了",
-  screenShareConnecting: "画面共有に接続中",
-  screenShareViewers: "現在の視聴者",
-  screenShareFullscreen: "全画面",
-  screenShareExitFullscreen: "全画面を終了",
-  screenShareSettings: "共有設定",
-  screenShareSettingsHint: "共有前に出力品質を調整",
-  screenShareResolution: "出力解像度",
-  screenShareResolutionSource: "元の解像度",
-  screenShareResolution720p: "720p（最大 1280 × 720）",
-  screenShareResolution1080p: "1080p（最大 1920 × 1080）",
-  screenShareFrameRate: "フレームレート上限",
-  screenShareSettingsNote: "次回の共有開始時に適用されます",
-  noiseSuppression: "ノイズ抑制",
-  noiseSuppressionHint: "ブラウザ側で音声を処理",
-  highQuality: "高品質な音声",
-  opusAudio: "低遅延 Opus 転送",
-  secureJoin: "安全に参加",
-  inviteProtected: "招待リンクでサーバーを保護",
-  realtime: "リアルタイムの同期",
-  membersSync: "チャンネルメンバーを常に同期",
-  privateServer: "プライベート音声サーバー",
-  joinServer: "サーバーに参加",
-  welcomeBack: "おかえりなさい",
-  joinLead: "名前と参加するチャンネルを選択してください。",
-  visitorCount: "あなたは{{count}}人目の訪問者です",
-  visitorTotal: "訪問者数：{{count}}人",
-  serverAddress: "TeamSpeak サーバーアドレス",
-  serverAddressPlaceholder: "例: ts.example.com または 127.0.0.1",
-  serverPort: "音声ポート",
-  serverPortPlaceholder: "9987",
-  serverAddressHint: "ゲートウェイが接続する TeamSpeak のアドレスとポートです。ブラウザからの直接接続先ではありません。",
-  relayAcceleration: "中継接続",
-  directConnection: "TeamSpeak へ直接接続",
-  relayAccelerationHint: "直接接続が不安定またはブロックされている場合は、設定済みの中継を選択してください。",
-  nickname: "ニックネーム",
-  nicknamePlaceholder: "例: Alex Rivera",
-  targetChannel: "参加先チャンネル",
-  optional: "任意",
-  emptyDefault: "空欄にするとデフォルトチャンネルを使用します",
-  rememberIdentity: "この端末に TeamSpeak ID を保存",
-  rememberIdentityHint: "この端末だけに保存し、次回の接続で再利用します。",
-  rememberIdentityConcurrentWarning: "同じブラウザでは、この ID を同時に1接続だけ使用できます。2つ目の接続では無効にするか、別のブラウザを使ってください。",
-  deviceIdentityOptions: "端末 ID の設定",
-  enterVoiceSpace: "音声スペースに参加",
-  connectionDetailsPrivate: "接続情報は今回の音声セッションでのみ使用されます",
-  recentServers: "最近のサーバー",
-  saveFavorite: "お気に入りに保存",
-  savedFavoriteToast: "サーバーをお気に入りに保存しました",
-  removedFavoriteToast: "お気に入りから削除しました",
-  clearLocalData: "ローカルデータを消去",
-  clearLocalDataConfirm: "この端末に保存された名前、設定、IDを削除しますか？",
-  localDataCleared: "ローカルデータを消去しました",
-  languageMenu: "言語",
-  networkPerformance: "ネットワーク性能",
-  networkPerformanceHint: "ブラウザから WebSpeak を経由して TeamSpeak まで継続測定",
-  packetLoss: "パケット損失",
-  measuring: "測定中…",
-  measureComplete: "継続監視中（3秒ごとに更新）",
-  measureNow: "今すぐ測定",
-  measureUnavailable: "接続後に利用できます",
-  webrtcStats: "画面共有 WebRTC",
-  webrtcStatsHint: "実際のメディア状態を1秒ごとに測定",
-  screenShareCapture: "キャプチャ",
-  screenShareSending: "視聴者へ送信",
-  screenShareReceiving: "共有者から受信",
-  screenShareDroppedFrames: "ドロップ",
-  screenShareJitter: "ジッター",
-  screenShareRtt: "RTT",
-  langSwitch: "中文",
-};
-
-function initialServerTarget() {
-  const explicit = query.get("server") ?? query.get("target");
-  if (explicit?.trim()) return splitTeamSpeakTarget(explicit);
-  const host = (query.get("tsHost") ?? location.hostname).trim();
-  const port = (query.get("tsPort") ?? DEFAULT_TEAM_SPEAK_PORT).trim();
-  return splitTeamSpeakTarget(host, port || DEFAULT_TEAM_SPEAK_PORT);
-}
-
-function getInitialLanguage(): Language {
-  const stored = localStorage.getItem("webspeak:language");
-  if (stored === "zh" || stored === "en" || stored === "de" || stored === "ru" || stored === "ja") return stored;
-  if (typeof navigator !== "undefined" && navigator.language.toLowerCase().startsWith("zh")) return "zh";
-  if (typeof navigator !== "undefined" && navigator.language.toLowerCase().startsWith("de")) return "de";
-  if (typeof navigator !== "undefined" && navigator.language.toLowerCase().startsWith("ru")) return "ru";
-  if (typeof navigator !== "undefined" && navigator.language.toLowerCase().startsWith("ja")) return "ja";
-  return "en";
-}
-
-function t(key: string, variables: Record<string, string | number> = {}) {
-  let value = translations[language.value][key] ?? translations.en[key] ?? translations.zh[key] ?? key;
-  for (const [name, replacement] of Object.entries(variables)) value = value.replaceAll(`{{${name}}}`, String(replacement));
-  return value;
-}
-
-function localizedMessage(message: string) {
-  if (language.value === "zh") return message;
-  const localizedExact: Record<string, string> = language.value === "ru" ? {
-    "该服务器需要密码，请输入密码后重试": "Для этого сервера требуется пароль. Введите его и повторите попытку",
-    "服务器密码错误，请重新输入": "Неверный пароль сервера. Введите его ещё раз",
-    "昵称长度不符合 TeamSpeak 服务器要求，至少 3 个字符，请修改后重试": "Длина имени не соответствует требованиям TeamSpeak (не менее 3 символов). Измените имя и повторите попытку",
-    "TeamSpeak 服务器地址无效": "Неверный адрес сервера TeamSpeak",
-    "找不到 TeamSpeak 服务器主机名，请检查地址": "Не удалось найти сервер TeamSpeak. Проверьте адрес",
-    "无法到达 TeamSpeak 服务器，请检查网络或地址": "Сервер TeamSpeak недоступен. Проверьте сеть или адрес",
-    "TeamSpeak 服务器拒绝了连接，请检查端口和服务状态": "Сервер TeamSpeak отклонил подключение. Проверьте порт и состояние службы",
-    "连接 TeamSpeak 超时，请检查网络或服务器状态": "Истекло время подключения к TeamSpeak. Проверьте сеть и состояние сервера",
-    "你没有执行此操作的权限": "У вас нет права выполнять это действие",
-  } : {
-    "该服务器需要密码，请输入密码后重试": "このサーバーにはパスワードが必要です。入力して再試行してください",
-    "服务器密码错误，请重新输入": "サーバーパスワードが正しくありません。もう一度入力してください",
-    "昵称长度不符合 TeamSpeak 服务器要求，至少 3 个字符，请修改后重试": "ニックネームの長さが TeamSpeak の要件を満たしていません（3文字以上）。変更して再試行してください",
-    "TeamSpeak 服务器地址无效": "TeamSpeak サーバーアドレスが正しくありません",
-    "找不到 TeamSpeak 服务器主机名，请检查地址": "TeamSpeak サーバーが見つかりません。アドレスを確認してください",
-    "无法到达 TeamSpeak 服务器，请检查网络或地址": "TeamSpeak サーバーに到達できません。ネットワークまたはアドレスを確認してください",
-    "TeamSpeak 服务器拒绝了连接，请检查端口和服务状态": "TeamSpeak サーバーが接続を拒否しました。ポートとサービスの状態を確認してください",
-    "连接 TeamSpeak 超时，请检查网络或服务器状态": "TeamSpeak への接続がタイムアウトしました。ネットワークとサーバーの状態を確認してください",
-    "你没有执行此操作的权限": "この操作を実行する権限がありません",
-  };
-  if ((language.value === "ru" || language.value === "ja") && localizedExact[message]) return localizedExact[message];
-  const errorCodeMatch = message.match(/错误代码：([A-Z0-9_-]{1,64})）(?:：([^，。]+))?/);
-  if (errorCodeMatch) {
-    const code = errorCodeMatch[1];
-    const detail = errorCodeMatch[2] ? `: ${errorCodeMatch[2]}` : "";
-    const operation = message.startsWith("操作失败");
-    if (language.value === "de") return `${operation ? "Vorgang" : "TeamSpeak-Verbindung"} fehlgeschlagen (Fehlercode: ${code})${detail}. Prüfe Eingaben, Netzwerk und Serverstatus`;
-    if (language.value === "ru") return `${operation ? "Операция" : "Подключение TeamSpeak"} не выполнена (код ошибки: ${code})${detail}. Проверьте ввод, сеть и состояние сервера`;
-    if (language.value === "ja") return `${operation ? "操作" : "TeamSpeak 接続"}に失敗しました（エラーコード: ${code}）${detail}。入力、ネットワーク、サーバーの状態を確認してください`;
-    return `${operation ? "Operation" : "TeamSpeak connection"} failed (error code: ${code})${detail}. Check your input, network, and server status`;
-  }
-  const exact: Record<string, string> = {
-    "语音功能需要 HTTPS 安全连接": "Voice requires a secure HTTPS connection",
-    "当前浏览器不支持麦克风访问": "This browser does not support microphone access",
-    "当前浏览器不支持 Web Audio 音频处理": "This browser does not support Web Audio processing",
-    "当前浏览器不支持音频解码，请使用最新版 Chrome 或 Edge": "Audio decoding is unavailable. Use the latest Chrome or Edge",
-    "当前浏览器不支持扬声器设备选择，将使用默认输出设备": "Output device selection is not supported by this browser. Using the default output device",
-    "所选扬声器当前不可用": "The selected speaker is not available",
-    "连接服务器失败，请检查邀请链接或服务器状态": "Could not connect. Check the invite link or server status",
-    "请求来源不受信任，请从正确的网站入口重新打开": "The request origin is not trusted. Reopen the official WebSpeak page",
-    "WebSpeak 尚未完成配置，请联系管理员": "WebSpeak has not been configured yet. Contact the administrator",
-    "请求过于频繁，请稍后重试": "Too many requests. Try again shortly",
-    "当前中继加速不可用，请关闭加速或联系管理员": "The selected relay is unavailable. Turn off relay mode or contact the administrator",
-    "邀请链接已失效或已被撤销": "The invite link is invalid, expired, or revoked",
-    "TeamSpeak 连接已断开": "The TeamSpeak connection was closed",
-    "连接已断开": "The connection was closed",
-    "此 TeamSpeak 身份已在另一个浏览器页面使用，请关闭另一条连接或取消“保持身份”后重试": "This TeamSpeak identity is already used by another browser page. Close that connection or clear ‘Remember identity’ and try again",
-    "TeamSpeak 服务器地址无效": "The TeamSpeak server address is invalid",
-    "昵称长度不符合 TeamSpeak 服务器要求，至少 3 个字符，请修改后重试": "The nickname length does not meet the TeamSpeak server requirements (at least 3 characters). Change it and try again",
-    "TeamSpeak 服务器连接失败": "Could not connect to the TeamSpeak server",
-    "找不到 TeamSpeak 服务器主机名，请检查地址": "The TeamSpeak server hostname could not be resolved. Check the address",
-    "无法到达 TeamSpeak 服务器，请检查网络或地址": "The TeamSpeak server is unreachable. Check the network or address",
-    "TeamSpeak 服务器拒绝了连接，请检查端口和服务状态": "The TeamSpeak server refused the connection. Check the port and server status",
-    "TeamSpeak 连接被服务器或网络重置，请稍后重试": "The TeamSpeak connection was reset by the server or network. Try again shortly",
-    "连接 TeamSpeak 超时，请检查网络或服务器状态": "The TeamSpeak connection timed out. Check the network or server status",
-    "该服务器需要密码，请输入密码后重试": "This server requires a password. Enter it and try again",
-    "服务器密码错误，请重新输入": "The server password is incorrect. Enter it again",
-    "TeamSpeak 协议协商失败": "TeamSpeak protocol negotiation failed",
-    "TeamSpeak 服务器拒绝了连接": "The TeamSpeak server rejected the connection",
-    "TeamSpeak 连接失败，请检查地址、网络或服务器状态": "TeamSpeak connection failed. Check the address, network, or server status",
-    "服务器当前已满，请稍后重试": "The server is full. Try again shortly",
-    "服务器当前已满或拒绝了连接，请稍后重试": "The server is full or rejected the connection. Try again shortly",
-    "WebSpeak 尚未配置 TeamSpeak 目标。": "The WebSpeak TeamSpeak target has not been configured",
-    "此 TeamSpeak 服务器地址不允许连接": "This TeamSpeak server address is not allowed",
-    "请输入有效的昵称": "Enter a valid nickname",
-    "消息格式无效": "The message format is invalid",
-    "请求标识无效": "The request id is invalid",
-    "不支持的操作": "This operation is not supported",
-    "操作参数无效": "The operation payload is invalid",
-    "频道标识无效": "The channel id is invalid",
-    "成员标识无效": "The member id is invalid",
-    "频道密码无效": "The channel password is invalid",
-    "文字消息无效": "The text message is invalid",
-    "戳一戳消息无效": "The poke message is invalid",
-    "离开状态无效": "The away status is invalid",
-    "音频帧格式无效": "The audio frame is invalid",
-    "私语目标无效": "The whisper targets are invalid",
-    "私语状态无效": "The whisper state is invalid",
-    "请先选择私语目标": "Choose a whisper target first",
-    "私语目标已离线": "A whisper target is offline",
-    "TeamSpeak 会话尚未就绪": "The TeamSpeak session is not ready",
-    "频道切换失败": "Channel switch failed",
-    "该频道需要密码": "This channel requires a password",
-    "该频道已满": "This channel is full",
-    "你没有执行此操作的权限": "You do not have permission to perform this action",
-    "不能移动自己的客户端": "You cannot move yourself",
-    "目标频道不可用": "The target channel is unavailable",
-    "成员已离线或当前不可见": "The member is offline or no longer visible",
-    "成员已离线": "This member is offline",
-    "操作失败": "The operation failed",
-    "语音会话票据缺失或已过期，请返回列表重新进入语音空间": "The voice session token is missing or expired. Return to the list and enter the voice space again",
-    "语音网关拒绝了本次连接：身份无效，请取消“保持身份”后重新进入": "The voice gateway rejected the connection because the identity is invalid. Clear ‘Remember identity’ and try again",
-    "语音网关拒绝了本次连接：身份无效或无法在此页面使用，请取消“保持身份”后重新进入": "The voice gateway rejected the connection because the identity is invalid or unavailable on this page. Clear ‘Remember identity’ and try again",
-    "当前中继加速不可用，请关闭加速后重试或联系管理员": "The selected relay is unavailable. Turn off relay mode and try again, or contact the administrator",
-    "与语音网关的网络连接异常中断（掉线或代理断开），并非 TeamSpeak 服务器拒绝连接，请检查网络后重新进入": "The voice gateway connection was interrupted (offline or proxy disconnected); the TeamSpeak server did not reject it. Check your network and enter again",
-    "语音网关会话意外结束，请重新进入语音空间": "The voice gateway session ended unexpectedly. Enter the voice space again",
-    "语音网关未能创建 TeamSpeak 客户端（服务器可能已关闭或地址不可达），请确认服务器地址或稍后重试": "The voice gateway could not create a TeamSpeak client. The server may be offline or unreachable; check the address and try again",
-    "该昵称已被服务器上的其他用户占用，请更换昵称": "This nickname is already in use on the server. Choose another one",
-    "该昵称已被占用，请更换昵称": "This nickname is already in use. Choose another one",
-    "你的身份安全等级低于该服务器要求，请提升后重试": "Your identity security level is below what this server requires. Raise it and try again",
-    "该身份建立的连接数已达上限，请关闭其他连接后重试": "This identity reached its connection limit. Close the other connections and try again",
-    "客户端版本过旧，服务器拒绝连接，请升级后重试": "Your client version is outdated and the server rejected the connection. Update and try again",
-    "客户端版本过旧，服务器拒绝了该操作": "Your client version is outdated, so the server rejected this action",
-    "操作过于频繁，已被服务器洪水防护暂时拒绝，请稍后重试": "Too many requests: the server flood protection rejected you temporarily. Try again shortly",
-    "操作过于频繁，请稍后重试": "Too many requests. Try again shortly",
-    "你已被该服务器封禁，无法连接": "You are banned from this server, so the connection is refused",
-    "你已被该服务器封禁": "You are banned from this server",
-    "你已被服务器移出": "You were removed from the server",
-    "TeamSpeak 服务器正在关闭，暂时无法连接": "The TeamSpeak server is shutting down and is unreachable right now",
-    "TeamSpeak 服务器未能完成连接初始化，请检查地址、端口或稍后重试": "The TeamSpeak server could not finish initialising the connection. Check the address and port, or try again shortly",
-    "TeamSpeak 服务器拒绝了参数，通常是昵称长度或格式不合规": "The TeamSpeak server rejected the parameters, usually because the nickname length or format is invalid",
-  };
-  if (language.value === "en" && exact[message]) return exact[message];
-  if (message.startsWith("麦克风访问失败：")) {
-    const detail = message.slice(8);
-    if (language.value === "ru") return `Не удалось получить доступ к микрофону: ${detail}`;
-    if (language.value === "ja") return `マイクへのアクセスに失敗しました: ${detail}`;
-    return language.value === "de" ? `Mikrofonzugriff fehlgeschlagen: ${detail}` : `Microphone access failed: ${detail}`;
-  }
-  if (message.startsWith("切换失败：")) {
-    const detail = message.slice(5);
-    if (language.value === "ru") return `Не удалось переключить канал: ${detail}`;
-    if (language.value === "ja") return `チャンネルの切り替えに失敗しました: ${detail}`;
-    return language.value === "de" ? `Kanalwechsel fehlgeschlagen: ${detail}` : `Channel switch failed: ${detail}`;
-  }
-  if (language.value === "de") {
-    const german: Record<string, string> = {
-      "语音功能需要 HTTPS 安全连接": "Für Sprachfunktionen ist eine sichere HTTPS-Verbindung erforderlich",
-      "当前浏览器不支持麦克风访问": "Dieser Browser unterstützt keinen Mikrofonzugriff",
-      "当前浏览器不支持 Web Audio 音频处理": "Dieser Browser unterstützt keine Web-Audio-Verarbeitung",
-      "连接服务器失败，请检查邀请链接或服务器状态": "Verbindung fehlgeschlagen. Prüfe den Einladungslink oder den Serverstatus",
-      "请求来源不受信任，请从正确的网站入口重新打开": "Die Anfragequelle ist nicht vertrauenswürdig. Öffne die offizielle WebSpeak-Seite erneut",
-      "WebSpeak 尚未完成配置，请联系管理员": "WebSpeak wurde noch nicht konfiguriert. Wende dich an den Administrator",
-      "请求过于频繁，请稍后重试": "Zu viele Anfragen. Versuche es gleich erneut",
-      "当前中继加速不可用，请关闭加速或联系管理员": "Das ausgewählte Relay ist nicht verfügbar. Deaktiviere den Relay-Modus oder wende dich an den Administrator",
-      "邀请链接已失效或已被撤销": "Der Einladungslink ist ungültig, abgelaufen oder widerrufen",
-      "TeamSpeak 连接已断开": "Die TeamSpeak-Verbindung wurde getrennt",
-      "连接已断开": "Die Verbindung wurde getrennt",
-      "TeamSpeak 服务器地址无效": "Die TeamSpeak-Serveradresse ist ungültig",
-      "昵称长度不符合 TeamSpeak 服务器要求，至少 3 个字符，请修改后重试": "Die Länge des Spitznamens entspricht nicht den Anforderungen des TeamSpeak-Servers (mindestens 3 Zeichen). Ändere ihn und versuche es erneut",
-      "请输入有效的昵称": "Gib einen gültigen Nicknamen ein",
-      "找不到 TeamSpeak 服务器主机名，请检查地址": "Der TeamSpeak-Servername konnte nicht aufgelöst werden. Prüfe die Adresse",
-      "无法到达 TeamSpeak 服务器，请检查网络或地址": "Der TeamSpeak-Server ist nicht erreichbar. Prüfe Netzwerk und Adresse",
-      "TeamSpeak 服务器拒绝了连接，请检查端口和服务状态": "Der TeamSpeak-Server hat die Verbindung abgelehnt. Prüfe Port und Serverstatus",
-      "TeamSpeak 连接被服务器或网络重置，请稍后重试": "Die TeamSpeak-Verbindung wurde vom Server oder Netzwerk zurückgesetzt. Versuche es später erneut",
-      "连接 TeamSpeak 超时，请检查网络或服务器状态": "Die TeamSpeak-Verbindung hat das Zeitlimit überschritten. Prüfe Netzwerk und Serverstatus",
-      "该服务器需要密码，请输入密码后重试": "Dieser Server benötigt ein Passwort. Gib es ein und versuche es erneut",
-      "服务器密码错误，请重新输入": "Das Serverpasswort ist falsch. Gib es erneut ein",
-      "TeamSpeak 协议协商失败": "Die Aushandlung des TeamSpeak-Protokolls ist fehlgeschlagen",
-      "TeamSpeak 服务器拒绝了连接": "Der TeamSpeak-Server hat die Verbindung abgelehnt",
-      "TeamSpeak 连接失败，请检查地址、网络或服务器状态": "Die TeamSpeak-Verbindung ist fehlgeschlagen. Prüfe Adresse, Netzwerk und Serverstatus",
-      "服务器当前已满或拒绝了连接，请稍后重试": "Der Server ist voll oder hat die Verbindung abgelehnt. Versuche es später erneut",
-      "服务器当前已满，请稍后重试": "Der Server ist derzeit voll. Versuche es später erneut",
-      "该昵称已被服务器上的其他用户占用，请更换昵称": "Dieser Spitzname wird auf dem Server bereits verwendet. Wähle einen anderen",
-      "该昵称已被占用，请更换昵称": "Dieser Spitzname wird bereits verwendet. Wähle einen anderen",
-      "你的身份安全等级低于该服务器要求，请提升后重试": "Deine Sicherheitsstufe liegt unter der Anforderung dieses Servers. Erhöhe sie und versuche es erneut",
-      "该身份建立的连接数已达上限，请关闭其他连接后重试": "Diese Identität hat ihr Verbindungslimit erreicht. Schließe die anderen Verbindungen und versuche es erneut",
-      "客户端版本过旧，服务器拒绝连接，请升级后重试": "Deine Client-Version ist veraltet und der Server hat die Verbindung abgelehnt. Aktualisiere und versuche es erneut",
-      "客户端版本过旧，服务器拒绝了该操作": "Deine Client-Version ist veraltet, daher hat der Server diese Aktion abgelehnt",
-      "操作过于频繁，已被服务器洪水防护暂时拒绝，请稍后重试": "Zu viele Anfragen: Der Flood-Schutz des Servers hat dich vorübergehend abgewiesen. Versuche es gleich erneut",
-      "操作过于频繁，请稍后重试": "Zu viele Anfragen. Versuche es gleich erneut",
-      "你已被该服务器封禁，无法连接": "Du wurdest von diesem Server gebannt und kannst nicht verbinden",
-      "你已被该服务器封禁": "Du wurdest von diesem Server gebannt",
-      "你已被服务器移出": "Du wurdest vom Server entfernt",
-      "TeamSpeak 服务器正在关闭，暂时无法连接": "Der TeamSpeak-Server wird heruntergefahren und ist derzeit nicht erreichbar",
-      "TeamSpeak 服务器未能完成连接初始化，请检查地址、端口或稍后重试": "Der TeamSpeak-Server konnte die Verbindungsinitialisierung nicht abschließen. Prüfe Adresse und Port oder versuche es später erneut",
-      "TeamSpeak 服务器拒绝了参数，通常是昵称长度或格式不合规": "Der TeamSpeak-Server hat die Parameter abgelehnt, meist wegen ungültiger Länge oder ungültigen Formats des Spitznamens",
-      "此 TeamSpeak 身份已在另一个浏览器页面使用，请关闭另一条连接或取消“保持身份”后重试": "Diese TeamSpeak-Identität wird bereits in einem anderen Browser-Tab verwendet. Schließe die andere Verbindung oder deaktiviere „Identität merken“ und versuche es erneut",
-      "语音会话票据缺失或已过期，请返回列表重新进入语音空间": "Der Sprachsitzungs-Token fehlt oder ist abgelaufen. Kehre zur Liste zurück und tritt dem Sprachraum erneut bei",
-      "语音网关拒绝了本次连接：身份无效，请取消“保持身份”后重新进入": "Das Sprach-Gateway hat die Verbindung abgelehnt: Die Identität ist ungültig. Deaktiviere „Identität merken“ und tritt erneut bei",
-      "语音网关拒绝了本次连接：身份无效或无法在此页面使用，请取消“保持身份”后重新进入": "Das Sprach-Gateway hat die Verbindung abgelehnt: Die Identität ist ungültig oder kann auf dieser Seite nicht verwendet werden. Deaktiviere „Identität merken“ und tritt erneut bei",
-      "当前中继加速不可用，请关闭加速后重试或联系管理员": "Der beschleunigte Relay-Modus ist nicht verfügbar. Deaktiviere ihn und versuche es erneut oder wende dich an den Administrator",
-      "与语音网关的网络连接异常中断（掉线或代理断开），并非 TeamSpeak 服务器拒绝连接，请检查网络后重新进入": "Die Verbindung zum Sprach-Gateway wurde unerwartet unterbrochen (Offline oder Proxy getrennt) – der TeamSpeak-Server hat die Verbindung nicht abgelehnt. Prüfe deine Netzwerkverbindung und tritt erneut bei",
-      "语音网关会话意外结束，请重新进入语音空间": "Die Sprach-Gateway-Sitzung wurde unerwartet beendet. Tritt dem Sprachraum erneut bei",
-      "语音网关未能创建 TeamSpeak 客户端（服务器可能已关闭或地址不可达），请确认服务器地址或稍后重试": "Das Sprach-Gateway konnte keinen TeamSpeak-Client erstellen (der Server ist möglicherweise aus oder nicht erreichbar). Prüfe die Serveradresse oder versuche es später erneut",
-      "消息格式无效": "Ungültiges Nachrichtenformat",
-      "请求标识无效": "Ungültige Anforderungs-ID",
-      "不支持的操作": "Nicht unterstützte Operation",
-      "操作参数无效": "Ungültige Operationsparameter",
-      "频道标识无效": "Ungültige Kanal-ID",
-      "频道密码无效": "Ungültiges Kanalpasswort",
-      "成员标识无效": "Ungültige Mitglieds-ID",
-      "文字消息无效": "Ungültige Textnachricht",
-      "戳一戳消息无效": "Ungültige Poke-Nachricht",
-      "离开状态无效": "Ungültiger Abwesenheitsstatus",
-      "音频帧格式无效": "Ungültiges Audio-Frame-Format",
-      "成员音量无效": "Ungültige Mitgliedslautstärke",
-      "私语目标无效": "Ungültige Flüsterziele",
-      "私语状态无效": "Ungültiger Flüsterstatus",
-      "请先选择私语目标": "Wähle zuerst ein Flüsterziel",
-      "TeamSpeak 会话尚未就绪": "Die TeamSpeak-Sitzung ist noch nicht bereit",
-      "频道切换失败": "Kanalwechsel fehlgeschlagen",
-      "该频道需要密码": "Dieser Kanal erfordert ein Passwort",
-      "该频道已满": "Dieser Kanal ist voll",
-      "你没有执行此操作的权限": "Du hast keine Berechtigung für diese Aktion",
-      "不能移动自己的客户端": "Du kannst dich nicht selbst verschieben",
-      "目标频道不可用": "Der Zielkanal ist nicht verfügbar",
-      "成员已离线或当前不可见": "Das Mitglied ist offline oder nicht mehr sichtbar",
-      "成员已离线": "Das Mitglied ist offline",
-      "操作失败": "Operation fehlgeschlagen",
-    };
-    if (german[message]) return german[message];
-    if (message.startsWith("麦克风访问失败：")) return `Mikrofonzugriff fehlgeschlagen: ${message.slice(8)}`;
-    if (message.startsWith("麦克风声音未能发送：")) return `Mikrofon-Audio konnte nicht gesendet werden: ${message.slice(10)}`;
-    if (message.startsWith("音频链路异常")) return message.replace("音频链路异常", "Audioverbindung fehlerhaft");
-  }
-  if (language.value === "ru") return exact[message] ?? "Не удалось выполнить операцию. Проверьте ввод, сеть и состояние сервера";
-  if (language.value === "ja") return exact[message] ?? "操作に失敗しました。入力、ネットワーク、サーバーの状態を確認してください";
-  return exact[message] ?? message;
-}
-
-function localizedAudioNotice(code: string, message: string) {
-  if (language.value === "zh") return message;
-  const normalizedCode = visibleErrorCode(code || "AUDIO_NOTICE");
-  const messages: Record<string, { en: string; de: string; ru: string; ja: string }> = {
-    WEBRTC_FALLBACK: {
-      en: `WebRTC realtime voice is unavailable (error code: ${normalizedCode}). Compatibility transport is active; latency and audio quality may be lower`,
-      de: `Echtzeitstimme über WebRTC ist nicht verfügbar (Fehlercode: ${normalizedCode}). Der Kompatibilitätstransport ist aktiv; Latenz und Audioqualität können schlechter sein`,
-      ru: `Голосовая связь WebRTC недоступна (код ошибки: ${normalizedCode}). Используется совместимый транспорт; задержка и качество звука могут быть ниже`,
-      ja: `WebRTC のリアルタイム音声は利用できません（エラーコード: ${normalizedCode}）。互換トランスポートを使用するため、遅延や音質が低下する場合があります`,
-    },
-    PLAYBACK_BLOCKED: {
-      en: "The browser blocked automatic audio playback. Click the page or allow audio playback for this site",
-      de: "Der Browser hat die automatische Audiowiedergabe blockiert. Klicke auf die Seite oder erlaube die Audiowiedergabe für diese Website",
-      ru: "Браузер заблокировал автоматическое воспроизведение. Нажмите на страницу или разрешите воспроизведение для этого сайта",
-      ja: "ブラウザが自動再生をブロックしました。ページをクリックするか、このサイトの再生を許可してください",
-    },
-    DEVICE_LIST_UNAVAILABLE: {
-      en: "Audio devices could not be listed. The browser default devices will be used",
-      de: "Audiogeräte konnten nicht aufgelistet werden. Die Standardgeräte des Browsers werden verwendet",
-      ru: "Не удалось получить список аудиоустройств. Будут использованы устройства браузера по умолчанию",
-      ja: "オーディオデバイスを一覧表示できません。ブラウザのデフォルトデバイスを使用します",
-    },
-    AUDIO_CONTEXT_SUSPENDED: {
-      en: "Browser audio processing is paused. Click the page once to resume microphone and speaker audio",
-      de: "Die Audioverarbeitung des Browsers ist pausiert. Klicke einmal auf die Seite, um Mikrofon und Lautsprecher fortzusetzen",
-      ru: "Обработка звука браузером приостановлена. Нажмите на страницу, чтобы возобновить работу микрофона и динамиков",
-      ja: "ブラウザの音声処理が一時停止しています。ページを一度クリックしてマイクとスピーカーを再開してください",
-    },
-    AUDIO_ENCODER_UNAVAILABLE: {
-      en: `Microphone audio could not be encoded (error code: ${normalizedCode}). Other members may not hear you`,
-      de: `Mikrofon-Audio konnte nicht kodiert werden (Fehlercode: ${normalizedCode}). Andere Mitglieder hören dich möglicherweise nicht`,
-      ru: `Не удалось кодировать звук микрофона (код ошибки: ${normalizedCode}). Другие участники могут вас не слышать`,
-      ja: `マイク音声をエンコードできませんでした（エラーコード: ${normalizedCode}）。他のメンバーに音声が届かない可能性があります`,
-    },
-  };
-  const locale = language.value === "de" ? "de" : language.value === "ru" ? "ru" : language.value === "ja" ? "ja" : "en";
-  return messages[code]?.[locale] ?? localizedMessage(message);
-}
-
-function visibleErrorCode(code: string): string {
-  const normalized = String(code || "CONNECTION_FAILED")
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9_-]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-  return (normalized || "CONNECTION_FAILED").slice(0, 64);
-}
-
-function persistLanguage() {
-  localStorage.setItem("webspeak:language", language.value);
-  void saveLocalPreferences({ schemaVersion: 1, language: language.value });
-}
-
-function cycleTheme() {
-  themeMode.value = nextTheme(themeMode.value);
-  saveTheme(themeMode.value);
-  void saveLocalPreferences({ schemaVersion: 1, theme: themeMode.value });
-}
-
-const screenShareIndicatorBars = [5, 10, 7, 12, 8, 10];
-
-const channelTree = computed<TreeChannel[]>(() => {
-  const source = [...channels];
-  const sourceIndex = new Map(source.map((item, index) => [item.id, index]));
-  const enriched = source.map((item) => ({
-    ...item,
-    members: (item.members ?? []).map((member) => ({ ...member, isSelf: member.id === voiceState.tsClientId })),
-  }));
-  const byId = new Map(enriched.map((item) => [item.id, item]));
-  const depthCache = new Map<string, number>();
-
-  function depthOf(item: ChannelInfo, visiting = new Set<string>()): number {
-    if (depthCache.has(item.id)) return depthCache.get(item.id)!;
-    if (!item.parentID || item.parentID === "0" || visiting.has(item.id)) return 0;
-    const parent = byId.get(item.parentID);
-    const depth = parent ? depthOf(parent, new Set(visiting).add(item.id)) + 1 : 0;
-    depthCache.set(item.id, depth);
-    return depth;
-  }
-
-  const childrenByParent = new Map<string, TreeChannel[]>();
-  for (const item of enriched) {
-    const channel = { ...item, depth: depthOf(item) };
-    const siblings = childrenByParent.get(channel.parentID) ?? [];
-    siblings.push(channel);
-    childrenByParent.set(channel.parentID, siblings);
-  }
-
-  function orderSiblings(siblings: TreeChannel[]): TreeChannel[] {
-    const bySiblingId = new Map(siblings.map((item) => [item.id, item]));
-    const successors = new Map<string, TreeChannel[]>();
-    const roots: TreeChannel[] = [];
-    const sourceOrder = (left: TreeChannel, right: TreeChannel) =>
-      (sourceIndex.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (sourceIndex.get(right.id) ?? Number.MAX_SAFE_INTEGER);
-
-    for (const item of siblings) {
-      const predecessor = item.order && item.order !== "0" && bySiblingId.has(item.order) ? item.order : "";
-      if (!predecessor) roots.push(item);
-      else successors.set(predecessor, [...(successors.get(predecessor) ?? []), item]);
-    }
-
-    roots.sort(sourceOrder);
-    for (const items of successors.values()) items.sort(sourceOrder);
-
-    const ordered: TreeChannel[] = [];
-    const visited = new Set<string>();
-    const append = (item: TreeChannel) => {
-      if (visited.has(item.id)) return;
-      visited.add(item.id);
-      ordered.push(item);
-      for (const successor of successors.get(item.id) ?? []) append(successor);
-    };
-    for (const root of roots) append(root);
-    for (const item of [...siblings].sort(sourceOrder)) append(item);
-    return ordered;
-  }
-
-  const orderedTree: TreeChannel[] = [];
-  const visit = (parentID: string) => {
-    for (const channel of orderSiblings(childrenByParent.get(parentID) ?? [])) {
-      orderedTree.push(channel);
-      visit(channel.id);
-    }
-  };
-  visit("0");
-  for (const channel of enriched) {
-    if (!orderedTree.some((item) => item.id === channel.id)) {
-      const fallback = { ...channel, depth: depthOf(channel) };
-      orderedTree.push(fallback);
-      visit(channel.id);
-    }
-  }
-  return orderedTree;
-});
-
-const currentChannel = computed<TreeChannel | undefined>(() => {
-  const explicitlySelected = channelTree.value.find((item) => item.id === selectedChannelId.value);
-  if (explicitlySelected) return explicitlySelected;
-  const fromSelf = channelTree.value.find((item) => item.members.some((member) => member.id === voiceState.tsClientId));
-  if (fromSelf) return fromSelf;
-  return channelTree.value.find((item) => item.name === channel.value) ?? channelTree.value[0];
-});
-const currentChannelName = computed(() => (currentChannel.value?.name ?? channel.value) || t("voiceLobby"));
-const currentChannelDescription = computed(() => currentChannel.value?.description ?? "");
-const screenShareErrorText = computed(() => {
-  if (screenShareErrorCode.value === "SCREEN_SHARE_NATIVE_BRIDGE_REQUIRED") return t("screenShareNativeUnavailable");
-  return screenShareError.value;
-});
-const currentMembers = computed<ChannelMember[]>(() => {
-  const source = currentChannel.value ? currentChannel.value.members : members;
-  return source.map((member) => ({ ...member, isSelf: member.isSelf || member.id === voiceState.tsClientId }));
-});
-const activeScreenShareStream = computed<ScreenShareStream | null>(() => screenShareStreams.find((stream) => stream.streamId === screenShareViewingStreamId.value) ?? null);
-const screenSharePlayerViewers = computed(() => activeScreenShareStream.value?.viewers.slice(-5) ?? []);
-const screenSharePlayerViewerCount = computed(() => activeScreenShareStream.value?.viewerCount ?? activeScreenShareStream.value?.viewers.length ?? 0);
-const screenSharePlayerOwnerName = computed(() => activeScreenShareStream.value?.ownerNickname ?? t("screenShare"));
-function screenShareStreamForMember(member: ChannelMember): ScreenShareStream | null {
-  return screenShareStreams.find((stream) => {
-    if (typeof stream.ownerClientId === "number" && stream.ownerClientId === member.id) return true;
-    if (stream.source === "teamspeak" && stream.ownerPeerId === `ts-${member.id}`) return true;
-    return stream.ownerNickname === member.nickname;
-  }) ?? null;
-}
-function toggleScreenShareForMember(member: ChannelMember): void {
-  const stream = screenShareStreamForMember(member);
-  if (!stream) return;
-  if (screenShareViewingStreamId.value === stream.streamId) leaveScreenShare();
-  else joinScreenShare(stream.streamId);
-}
-function screenShareViewerStyle(viewer: { nickname: string; avatar?: string }) {
-  return avatarStyle(viewer.nickname, viewer.nickname === nickname.value, viewer.avatar ?? "");
-}
-const roomMembers = computed(() => currentMembers.value.slice(0, 4));
-const memberChannels = computed<TreeChannel[]>(() => {
-  if (channelTree.value.length) return channelTree.value;
-  return [{ id: "__current__", parentID: "0", name: currentChannelName.value, description: currentChannelDescription.value, members: currentMembers.value, depth: 0 }];
-});
-const filteredMemberChannels = computed(() => {
-  const search = memberQuery.value.trim().toLowerCase();
-  if (!search) return memberChannels.value;
-  return memberChannels.value.filter((item) => item.name.toLowerCase().includes(search) || item.members.some((member) => member.nickname.toLowerCase().includes(search)));
-});
-const memberMoveMenuCurrentChannel = computed<TreeChannel | null>(() => {
-  const member = memberMenu.value?.member;
-  const currentId = currentChannel.value?.id;
-  if (!member || !currentId || currentId === "__current__") return null;
-  const sourceChannelId = memberChannels.value.find((channel) => channel.members.some((candidate) => candidate.id === member.id))?.id ?? "";
-  return memberChannels.value.find((channel) => channel.id === currentId) ?? null;
-});
-const memberMoveMenuCurrentSameChannel = computed(() => {
-  const member = memberMenu.value?.member;
-  const currentId = memberMoveMenuCurrentChannel.value?.id;
-  if (!member || !currentId) return false;
-  return memberChannels.value.find((channel) => channel.members.some((candidate) => candidate.id === member.id))?.id === currentId;
-});
-const memberMoveMenuOtherChannels = computed<TreeChannel[]>(() => {
-  const member = memberMenu.value?.member;
-  if (!member) return [];
-  const sourceChannelId = memberChannels.value.find((channel) => channel.members.some((candidate) => candidate.id === member.id))?.id ?? "";
-  const currentChannelId = memberMoveMenuCurrentChannel.value?.id;
-  return memberChannels.value.filter((channel) => channel.id !== "__current__" && channel.id !== sourceChannelId && channel.id !== currentChannelId);
-});
-const whisperTargets = computed(() => [...whisperTargetIds].map((id) => members.find((member) => member.id === id)).filter((member): member is ChannelMember => Boolean(member)));
-
-const privateConversations = computed(() => {
-  const conversations = new Map<string, { id: number; name: string; lastMessage: number }>();
-  for (const message of chatMessages) {
-    if (message.scope !== "private" || !message.conversationId) continue;
-    const id = Number(message.conversationId);
-    if (!id) continue;
-    const member = members.find((candidate) => candidate.id === id);
-    const existing = conversations.get(message.conversationId);
-    conversations.set(message.conversationId, { id, name: member?.nickname ?? existing?.name ?? message.invokerName, lastMessage: Math.max(existing?.lastMessage ?? 0, message.timestamp) });
-  }
-  return [...conversations.values()].sort((a, b) => b.lastMessage - a.lastMessage);
-});
-
-const visibleChatMessages = computed(() => {
-  if (chatTab.value === "server") return chatMessages.filter((message) => message.scope === "server");
-  if (chatTab.value === "private") return chatMessages.filter((message) => message.scope === "private" && message.conversationId === String(privateClientId.value));
-  if (chatTab.value !== "channel") return [];
-  const channelId = currentChannel.value?.id;
-  return chatMessages.filter((message) => message.scope === "channel" && (!message.targetId || message.targetId === "0" || !channelId || message.targetId === channelId));
-});
-
-const chatTabLabel = computed(() => chatTab.value === "channel" ? t("textChannel") : chatTab.value === "server" ? t("serverChat") : chatTab.value === "private" ? t("privateMessage") : t("eventLog"));
-const chatTitle = computed(() => chatTab.value === "channel" ? t("channelChat", { channel: currentChannelName.value }) : chatTab.value === "server" ? t("serverChat") : chatTab.value === "events" ? t("eventLog") : privateConversations.value.find((conversation) => conversation.id === privateClientId.value)?.name ?? t("privateMessage"));
-const chatPlaceholder = computed(() => chatTab.value === "private" ? t("privateMessagePlaceholder") : chatTab.value === "server" ? t("serverMessagePlaceholder") : t("sendMessagePlaceholder"));
-const visiblePokes = computed(() => pokeNotifications.slice(-3));
-const memberMenuStyle = computed(() => {
-  if (!memberMenu.value) return {};
-  // #app applies zoom:var(--ui-scale) which also scales fixed-element
-  // coordinates against the viewport; divide the pointer position back to CSS
-  // pixels so the context menu opens exactly where the user clicked on large
-  // displays.
-  const scale = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--ui-scale")) || 1;
-  return { left: `${memberMenu.value.x / scale}px`, top: `${memberMenu.value.y / scale}px` };
-});
-const median = (values: number[]) => {
-  const sorted = [...values].sort((left, right) => left - right);
-  return sorted.length ? sorted[Math.floor(sorted.length / 2)] : null;
-};
-const performanceStats = computed(() => {
-  const samples = performanceSamples.value;
-  const attempts = performanceAttempts.value;
-  const gatewaySamples = samples.map((sample) => sample.browserRttMs);
-  const teamSpeakSamples = samples.filter((sample) => sample.teamSpeakReachable && sample.teamSpeakLatencyMs != null).map((sample) => sample.teamSpeakLatencyMs as number);
-  return {
-    gatewayLatencyMs: median(gatewaySamples),
-    gatewayLossPercent: attempts > 0 ? Math.round(((attempts - samples.length) / attempts) * 100) : null,
-    teamSpeakLatencyMs: median(teamSpeakSamples),
-    teamSpeakLossPercent: attempts > 0 ? Math.round(((attempts - teamSpeakSamples.length) / attempts) * 100) : null,
-    ready: attempts > 0,
-  };
-});
-
-watch(channelTree, (list) => {
-  if (!selectedChannelId.value && list[0]) {
-    selectedChannelId.value = list.find((item) => item.name === channel.value)?.id
-      ?? list.find((item) => item.members.some((member) => member.id === voiceState.tsClientId))?.id
-      ?? "";
-  }
-}, { deep: true });
-watch([() => chatMessages.length, chatTab, privateClientId], () => nextTick(scrollChatToEnd));
-watch(() => chatMessages.length, (length, previousLength) => {
-  const latest = chatMessages[length - 1];
-  if (latest && length > previousLength && latest.scope === "private" && !latest.isSelf) playNotification("private");
-});
-watch(() => voiceState.errorCode, (code) => {
-  if (code !== "CHANNEL_PASSWORD_REQUIRED" || !selectedChannelId.value) return;
-  channelPasswordDialog.open = true;
-  channelPasswordDialog.channelId = selectedChannelId.value;
-  channelPasswordDialog.password = "";
-  channelPasswordDialog.error = t("channelPasswordRetry");
-  channelPasswordDialog.submitting = false;
-  clearError();
-  void nextTick(() => document.getElementById("channel-password-input")?.focus());
-});
-watch(() => voiceState.errorCode, (code) => {
-  if (code !== "SERVER_PASSWORD_REQUIRED" && code !== "INVALID_SERVER_PASSWORD") return;
-  serverPasswordDialog.open = true;
-  serverPasswordDialog.password = "";
-  serverPasswordDialog.errorCode = code;
-  clearError();
-  void nextTick(() => document.getElementById("retry-server-password-input")?.focus());
-});
-watch(() => voiceState.channelSwitchedChannelId, (channelId) => {
-  if (!channelPasswordDialog.open || !channelId || channelId !== channelPasswordDialog.channelId) return;
-  channelPasswordDialog.open = false;
-  channelPasswordDialog.channelId = "";
-  channelPasswordDialog.password = "";
-  channelPasswordDialog.error = "";
-  channelPasswordDialog.submitting = false;
-});
-watch(() => pokeNotifications.length, (length, previousLength) => {
-  const latest = pokeNotifications[length - 1];
-  if (!latest || length <= previousLength) return;
-  showToast(`${latest.invokerName} ${t("pokedYou")}${latest.message ? `：${latest.message}` : ""}`);
-  playNotification("poke");
-  if (typeof Notification !== "undefined" && Notification.permission === "granted") new Notification(t("poke"), { body: `${latest.invokerName}: ${latest.message || t("pokedYou")}` });
-});
-watch(settingsOpen, (open) => {
-  if (open) {
-    audioSettingsError.value = "";
-    prepareInputDevices().catch((error: unknown) => {
-      audioSettingsError.value = microphoneErrorMessage(error);
-    });
-  } else {
-    stopMicrophoneTest();
-  }
-});
-watch([screenShareRemoteStream, screenShareRemoteVolume], ([stream, volume]) => {
-  void nextTick(() => {
-    const video = screenVideoEl.value;
-    if (!video) return;
-    if (video.srcObject !== stream) video.srcObject = stream;
-    video.volume = Math.max(0, Math.min(1, volume ?? 1));
-    if (stream) void video.play().catch(() => undefined);
-  });
-});
-watch(screenShareViewing, (viewing) => {
-  if (!viewing && document.fullscreenElement === screenSharePlayerEl.value) void document.exitFullscreen().catch(() => undefined);
-});
-watch(rememberIdentity, (remember) => {
-  localStorage.setItem("webspeak:remember-identity", remember ? "1" : "0");
-  if (!remember) {
-    identityMaterial.value = "";
-    void removeStoredIdentity();
-  }
-});
-watch([rememberIdentity, identityMaterial], ([remember, material]) => {
-  if (remember && material) void saveStoredIdentity(material);
-  if (!remember && material) identityMaterial.value = "";
-});
-watch(() => voiceState.connected, (connected) => {
-  if (!connected) {
-    stopPerformanceMonitoring();
-    return;
-  }
-  playNotification("connected");
-  const address = currentServerTarget();
-  if (!address) return;
-  const recent: RecentServer = {
-    id: serverKey(address),
-    address,
-    ...(nickname.value.trim() ? { nickname: nickname.value.trim() } : {}),
-    ...(rememberIdentity.value && identityMaterial.value ? { identityId: "current" } : {}),
-    lastConnectedAt: Date.now(),
-    ...(channel.value.trim() ? { lastChannelHint: { name: channel.value.trim() } } : {}),
-  };
-  void recordRecentServer(recent).then(() => listRecentServers().then((items) => { recentServers.value = items; }));
-  if (performancePanelOpen.value) startPerformanceMonitoring();
-});
-
-function togglePerformancePanel() {
-  performancePanelOpen.value = !performancePanelOpen.value;
-  if (performancePanelOpen.value) startPerformanceMonitoring();
-  else stopPerformanceMonitoring();
-}
-
-function resetPerformanceSamples(): void {
-  performanceProbeResults.value = [];
-  performanceSamples.value = [];
-  performanceAttempts.value = 0;
-}
-
-function startPerformanceMonitoring(): void {
-  if (performanceTimer || !voiceState.connected) return;
-  resetPerformanceSamples();
-  const generation = ++performanceMonitorGeneration;
-  void runPerformanceProbe(generation);
-  performanceTimer = window.setInterval(() => {
-    void runPerformanceProbe(generation);
-  }, PERFORMANCE_INTERVAL_MS);
-}
-
-function stopPerformanceMonitoring(): void {
-  if (performanceTimer) {
-    clearInterval(performanceTimer);
-    performanceTimer = null;
-  }
-  performanceMonitorGeneration += 1;
-  performanceRunning.value = false;
-}
-
-function refreshPerformanceProbe(): void {
-  void runPerformanceProbe();
-}
-
-async function runPerformanceProbe(generation = performanceMonitorGeneration): Promise<void> {
-  if (performanceRunning.value || !voiceState.connected || !performancePanelOpen.value) return;
-  performanceRunning.value = true;
-  try {
-    const sample = await measureLatency();
-    if (generation !== performanceMonitorGeneration || !performancePanelOpen.value) return;
-    performanceProbeResults.value.push(sample);
-    if (performanceProbeResults.value.length > PERFORMANCE_WINDOW_SIZE) performanceProbeResults.value.shift();
-    performanceAttempts.value = performanceProbeResults.value.length;
-    performanceSamples.value = performanceProbeResults.value.filter((result): result is LatencyProbeResult => result !== null);
-  } finally {
-    if (generation === performanceMonitorGeneration) performanceRunning.value = false;
-  }
-}
-watch(() => voiceState.reconnecting, (reconnecting, wasReconnecting) => {
-  if (reconnecting && !wasReconnecting) {
-    playNotification("disconnected");
-  }
-});
-watch(() => voiceState.reconnectFailed, (failed, wasFailed) => {
-  if (failed && !wasFailed) playNotification("reconnectFailed");
-});
-
-let deviceChangeHandler: (() => void) | undefined;
-let viewportMediaQuery: MediaQueryList | undefined;
-let viewportChangeHandler: (() => void) | undefined;
-let fullscreenChangeHandler: (() => void) | undefined;
-
-onMounted(() => {
-  browserError.value = checkSupport() ?? "";
-  void loadPublicConfig();
-  void loadLocalPreferences().then((preferences) => {
-    if (!localStorage.getItem("webspeak:language") && (preferences.language === "zh" || preferences.language === "en" || preferences.language === "de" || preferences.language === "ru" || preferences.language === "ja")) language.value = preferences.language;
-    if (!localStorage.getItem("webspeak:theme") && (preferences.theme === "system" || preferences.theme === "light" || preferences.theme === "dark")) {
-      themeMode.value = preferences.theme;
-      applyTheme(themeMode.value);
-    }
-  });
-  void loadStoredIdentity().then((stored) => {
-    if (stored && localStorage.getItem("webspeak:remember-identity") === "1") {
-      identityMaterial.value = stored.privateMaterial;
-      rememberIdentity.value = true;
-    }
-  }).finally(() => {
-    identityReady.value = true;
-  });
-  void listFavorites().then((items) => { favoriteServers.value = items; });
-  void listRecentServers().then((items) => { recentServers.value = items; });
-  deviceChangeHandler = () => { void refreshAudioDevices().catch(() => undefined); };
-  navigator.mediaDevices?.addEventListener("devicechange", deviceChangeHandler);
-  viewportMediaQuery = window.matchMedia("(max-width: 740px)");
-  viewportChangeHandler = () => {
-    isMobileViewport.value = viewportMediaQuery?.matches ?? false;
-    if (!isMobileViewport.value) memberMenu.value = null;
-    else if (accompanimentActive.value) void stopAccompaniment();
-  };
-  viewportChangeHandler();
-  viewportMediaQuery.addEventListener?.("change", viewportChangeHandler);
-  fullscreenChangeHandler = syncScreenShareFullscreen;
-  document.addEventListener("fullscreenchange", fullscreenChangeHandler);
-});
-onUnmounted(() => {
-  stopPerformanceMonitoring();
-  disconnect();
-  if (deviceChangeHandler) navigator.mediaDevices?.removeEventListener("devicechange", deviceChangeHandler);
-  if (viewportMediaQuery && viewportChangeHandler) viewportMediaQuery.removeEventListener?.("change", viewportChangeHandler);
-  if (fullscreenChangeHandler) document.removeEventListener("fullscreenchange", fullscreenChangeHandler);
-  if (toastTimer) clearTimeout(toastTimer);
-});
-
-function doConnect() {
-  if (!canJoin.value || voiceState.connecting) return;
-  clearError();
-  nickname.value = nickname.value.trim();
-  localStorage.setItem("webspeak:nickname", nickname.value);
-  void saveLocalPreferences({ schemaVersion: 1, lastNickname: nickname.value });
-  if (accessMode.value === "open") {
-    serverHost.value = serverHost.value.trim();
-    serverPort.value = serverPort.value.trim();
-  }
-  selectedChannelId.value = "";
-  // Keep the password field available for a retry even when the target is
-  // administrator-managed. The gateway still controls the target in fixed
-  // mode and only accepts a non-empty retry password for that target.
-  connect(currentServerTarget(), channel.value.trim(), nickname.value, serverPassword.value, rememberIdentity.value ? identityMaterial.value : "", rememberIdentity.value, inviteToken, Boolean(accelerationRelayId.value), accelerationRelayId.value);
-}
-
-function doDisconnect() {
-  disconnect();
-  selectedChannelId.value = "";
-  showToast(t("leftToast"));
-}
-
-function submitServerPassword() {
-  if (!serverPasswordDialog.open || !serverPasswordDialog.password) return;
-  serverPassword.value = serverPasswordDialog.password;
-  serverPasswordDialog.open = false;
-  serverPasswordDialog.password = "";
-  serverPasswordDialog.errorCode = "";
-  doConnect();
-}
-
-function cancelServerPassword() {
-  serverPasswordDialog.open = false;
-  serverPasswordDialog.password = "";
-  serverPasswordDialog.errorCode = "";
-  clearError();
-}
-
-function selectChannel(item: TreeChannel) {
-  selectedChannelId.value = item.id;
-  channel.value = item.name;
-  chatTab.value = "channel";
-  switchChannel(item.id);
-}
-
-function submitChannelPassword() {
-  if (!channelPasswordDialog.open || !channelPasswordDialog.channelId || !channelPasswordDialog.password) return;
-  channelPasswordDialog.error = "";
-  channelPasswordDialog.submitting = true;
-  switchChannel(channelPasswordDialog.channelId, channelPasswordDialog.password);
-}
-
-function cancelChannelPassword() {
-  const ownChannel = channelTree.value.find((item) => item.members.some((member) => member.id === voiceState.tsClientId));
-  if (ownChannel) selectedChannelId.value = ownChannel.id;
-  channelPasswordDialog.open = false;
-  channelPasswordDialog.channelId = "";
-  channelPasswordDialog.password = "";
-  channelPasswordDialog.error = "";
-  channelPasswordDialog.submitting = false;
-  clearError();
-}
-
-function selectChannelById() {
-  const item = channelTree.value.find((candidate) => candidate.id === selectedChannelId.value);
-  if (item) selectChannel(item);
-}
-
-function channelLabel(item: TreeChannel) {
-  return `${"　".repeat(item.depth)}${item.name}`;
-}
-
-function doShare() {
-  const invite = new URL(location.href);
-  invite.searchParams.delete("token");
-  invite.searchParams.delete("target");
-  invite.searchParams.delete("tsHost");
-  invite.searchParams.delete("tsPort");
-  invite.searchParams.delete("server");
-  if (accessMode.value === "open" && serverHost.value.trim()) invite.searchParams.set("server", currentServerTarget());
-  if (channel.value) invite.searchParams.set("channel", channel.value);
-  navigator.clipboard?.writeText(invite.toString()).then(() => showToast(t("copiedToast")), () => showToast(t("copyFailedToast")));
-}
-
-const canJoin = computed(() => Boolean(
-  initialized.value
-  && nickname.value.trim()
-  && (accessMode.value === "fixed" || (serverHost.value.trim() && isValidTeamSpeakPort(serverPort.value))),
-));
-const isFavorite = computed(() => favoriteServers.value.some((favorite) => favorite.id === serverKey(currentServerTarget())));
-
-function currentServerTarget(): string {
-  return combineTeamSpeakTarget(serverHost.value, serverPort.value);
-}
-
-function serverKey(address: string): string {
-  return address.trim().toLocaleLowerCase();
-}
-
-function selectLocalServer(address: string, savedNickname?: string): void {
-  const target = splitTeamSpeakTarget(address);
-  serverHost.value = target.address;
-  serverPort.value = target.port;
-  if (savedNickname && !nickname.value.trim()) nickname.value = savedNickname;
-}
-
-async function toggleFavorite(): Promise<void> {
-  const address = currentServerTarget();
-  if (!address) return;
-  const id = serverKey(address);
-  const existing = favoriteServers.value.find((favorite) => favorite.id === id);
-  if (existing) {
-    await removeFavorite(id);
-    favoriteServers.value = favoriteServers.value.filter((favorite) => favorite.id !== id);
-    showToast(t("removedFavoriteToast"));
-    return;
-  }
-  const favorite: FavoriteServer = { id, label: address, address, ...(nickname.value.trim() ? { nickname: nickname.value.trim() } : {}), ...(rememberIdentity.value && identityMaterial.value ? { identityId: "current" } : {}), ...(channel.value.trim() ? { lastChannelHint: { name: channel.value.trim() } } : {}) };
-  await saveFavorite(favorite);
-  favoriteServers.value = [...favoriteServers.value, favorite].sort((a, b) => a.label.localeCompare(b.label));
-  showToast(t("savedFavoriteToast"));
-}
-
-async function clearBrowserData(): Promise<void> {
-  if (!window.confirm(t("clearLocalDataConfirm"))) return;
-  await clearStoredLocalData();
-  for (const key of ["webspeak:nickname", "webspeak:language", "webspeak:theme", "webspeak:input-device", "webspeak:output-device", "webspeak:remember-identity"]) localStorage.removeItem(key);
-  themeMode.value = "system";
-  applyTheme(themeMode.value);
-  identityMaterial.value = "";
-  rememberIdentity.value = false;
-  favoriteServers.value = [];
-  recentServers.value = [];
-  showToast(t("localDataCleared"));
-}
-
-async function loadPublicConfig() {
-  try {
-    const response = await fetch("/api/public-config", { headers: { accept: "application/json" } });
-    if (!response.ok) return;
-    const config = await response.json() as { version?: unknown; initialized?: unknown; siteName?: unknown; welcomeText?: unknown; welcomeTextEn?: unknown; welcomeTexts?: unknown; accessMode?: unknown; target?: unknown; visitorNumber?: unknown; visitorTotal?: unknown; accelerationAvailable?: unknown; accelerationRelays?: unknown };
-    if (typeof config.version === "string" && config.version.trim()) appVersion.value = config.version.trim();
-    visitorNumber.value = Number.isSafeInteger(config.visitorNumber) && Number(config.visitorNumber) > 0 ? Number(config.visitorNumber) : null;
-    visitorTotal.value = Number.isSafeInteger(config.visitorTotal) && Number(config.visitorTotal) > 0 ? Number(config.visitorTotal) : null;
-    initialized.value = config.initialized === true;
-    if (typeof config.siteName === "string" && config.siteName.trim()) siteName.value = config.siteName.trim();
-    if (typeof config.welcomeText === "string") welcomeTextZh.value = config.welcomeText;
-    if (typeof config.welcomeTextEn === "string") welcomeTextEn.value = config.welcomeTextEn;
-    if (config.welcomeTexts && typeof config.welcomeTexts === "object" && !Array.isArray(config.welcomeTexts)) {
-      const welcomeTexts = config.welcomeTexts as Record<string, unknown>;
-      if (typeof welcomeTexts.zh === "string") welcomeTextZh.value = welcomeTexts.zh;
-      if (typeof welcomeTexts.en === "string") welcomeTextEn.value = welcomeTexts.en;
-      if (typeof welcomeTexts.de === "string") welcomeTextDe.value = welcomeTexts.de;
-      if (typeof welcomeTexts.ru === "string") welcomeTextRu.value = welcomeTexts.ru;
-      if (typeof welcomeTexts.ja === "string") welcomeTextJa.value = welcomeTexts.ja;
-    }
-    accessMode.value = config.accessMode === "open" ? "open" : "fixed";
-    accelerationRelays.value = Array.isArray(config.accelerationRelays)
-      ? config.accelerationRelays.flatMap((value) => {
-        if (!value || typeof value !== "object") return [];
-        const relay = value as { id?: unknown; name?: unknown };
-        return typeof relay.id === "string" && typeof relay.name === "string" && relay.id && relay.name
-          ? [{ id: relay.id, name: relay.name }]
-          : [];
-      })
-      : [];
-    if (!accelerationAvailable.value || !accelerationRelays.value.some((relay) => relay.id === accelerationRelayId.value)) accelerationRelayId.value = "";
-    const hasInviteTarget = query.has("server") || query.has("target") || query.has("tsHost") || query.has("tsPort");
-    if (!hasInviteTarget && typeof config.target === "string" && config.target.trim()) {
-      const target = splitTeamSpeakTarget(config.target);
-      serverHost.value = target.address;
-      serverPort.value = target.port;
-    }
-  } catch {
-    // Keep joining disabled until the gateway can confirm its initialized policy.
-  } finally {
-    serverConfigLoading.value = false;
-  }
-}
-
-function submitMessage() {
-  if (!messageDraft.value.trim()) return;
-  if (chatTab.value === "channel") sendTextMessage(messageDraft.value, currentChannel.value?.id ?? selectedChannelId.value);
-  else if (chatTab.value === "server") sendServerMessage(messageDraft.value);
-  else if (chatTab.value === "private" && privateClientId.value) sendPrivateMessage(privateClientId.value, messageDraft.value, String(privateClientId.value));
-  messageDraft.value = "";
-}
-
-function openPrivateChat(clientId: number): void {
-  if (!clientId || clientId === voiceState.tsClientId) return;
-  privateClientId.value = clientId;
-  chatTab.value = "private";
-  if (isMobileViewport.value) mobileSection.value = "chat";
-  memberMenu.value = null;
-  nextTick(scrollChatToEnd);
-}
-
-function openMemberMenu(member: ChannelMember, event: Event): void {
-  if (member.isSelf) return;
-  memberMoveMenuOpen.value = false;
-  const point = event instanceof MouseEvent ? event : undefined;
-  memberMenu.value = { member, x: Math.min((point?.clientX ?? 20), Math.max(12, window.innerWidth - 210)), y: Math.min((point?.clientY ?? 20), Math.max(12, window.innerHeight - 170)) };
-}
-
-function openMemberActions(member: ChannelMember): void {
-  if (member.isSelf) return;
-  memberMoveMenuOpen.value = false;
-  memberMenu.value = { member, x: 0, y: 0 };
-}
-
-function toggleMemberMoveMenu(): void {
-  memberMoveMenuOpen.value = true;
-}
-
-async function moveMemberDirect(member: ChannelMember, targetChannelId: string): Promise<void> {
-  if (member.isSelf || !targetChannelId || targetChannelId === "__current__") return;
-  const sourceChannel = memberChannels.value.find((channel) => channel.members.some((candidate) => candidate.id === member.id));
-  if (sourceChannel?.id === targetChannelId) {
-    memberMenu.value = null;
-    memberMoveMenuOpen.value = false;
-    return;
-  }
-  memberMenu.value = null;
-  memberMoveMenuOpen.value = false;
-  try {
-    // Moving a visible client is a server-admin operation; channel passwords
-    // must never be requested or forwarded for this action.
-    await moveClient(member.id, targetChannelId);
-    showToast(t("moveMemberSuccess"));
-  } catch (error: unknown) {
-    showToast(localizedMessage(error instanceof Error ? error.message : "操作失败"));
-  }
-}
-
-function onMemberDragStart(member: ChannelMember, event: DragEvent): void {
-  if (member.isSelf) {
-    event.preventDefault();
-    return;
-  }
-  draggedMember.value = member;
-  dragOverChannelId.value = "";
-  event.dataTransfer?.setData("text/plain", String(member.id));
-  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-}
-
-function onMemberDragEnd(): void {
-  draggedMember.value = null;
-  dragOverChannelId.value = "";
-}
-
-function onMemberPointerDown(member: ChannelMember, event: PointerEvent): void {
-  if (member.isSelf || event.button !== 0) return;
-  const target = event.target instanceof Element ? event.target : null;
-  if (target?.closest("input,button")) return;
-  event.preventDefault();
-  memberPointerDrag.member = member;
-  memberPointerDrag.pointerId = event.pointerId;
-  memberPointerDrag.startX = event.clientX;
-  memberPointerDrag.startY = event.clientY;
-  memberPointerDrag.active = false;
-  memberPointerDrag.targetChannelId = "";
-  const currentTarget = event.currentTarget as HTMLElement | null;
-  currentTarget?.setPointerCapture?.(event.pointerId);
-}
-
-function onMemberPointerMove(event: PointerEvent): void {
-  if (!memberPointerDrag.member || memberPointerDrag.pointerId !== event.pointerId) return;
-  const distance = Math.hypot(event.clientX - memberPointerDrag.startX, event.clientY - memberPointerDrag.startY);
-  if (!memberPointerDrag.active && distance < 6) return;
-  event.preventDefault();
-  memberPointerDrag.active = true;
-  draggedMember.value = memberPointerDrag.member;
-  const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-member-channel-id]");
-  const targetChannelId = target?.dataset.memberChannelId ?? "";
-  const sourceChannel = memberChannels.value.find((channel) => channel.members.some((candidate) => candidate.id === memberPointerDrag.member?.id));
-  if (!sourceChannel || !targetChannelId || targetChannelId === sourceChannel.id) {
-    memberPointerDrag.targetChannelId = "";
-    dragOverChannelId.value = "";
-    return;
-  }
-  memberPointerDrag.targetChannelId = targetChannelId;
-  dragOverChannelId.value = targetChannelId;
-}
-
-function onMemberPointerUp(event: PointerEvent): void {
-  if (!memberPointerDrag.member || memberPointerDrag.pointerId !== event.pointerId) return;
-  const member = memberPointerDrag.member;
-  const targetChannelId = memberPointerDrag.targetChannelId;
-  const currentTarget = event.currentTarget as HTMLElement | null;
-  currentTarget?.releasePointerCapture?.(event.pointerId);
-  memberPointerDrag.member = null;
-  memberPointerDrag.pointerId = null;
-  memberPointerDrag.active = false;
-  memberPointerDrag.targetChannelId = "";
-  draggedMember.value = null;
-  dragOverChannelId.value = "";
-  if (targetChannelId) void moveMemberDirect(member, targetChannelId);
-}
-
-function onMemberPointerCancel(event: PointerEvent): void {
-  if (!memberPointerDrag.member || memberPointerDrag.pointerId !== event.pointerId) return;
-  const currentTarget = event.currentTarget as HTMLElement | null;
-  currentTarget?.releasePointerCapture?.(event.pointerId);
-  memberPointerDrag.member = null;
-  memberPointerDrag.pointerId = null;
-  memberPointerDrag.active = false;
-  memberPointerDrag.targetChannelId = "";
-  draggedMember.value = null;
-  dragOverChannelId.value = "";
-}
-
-function onChannelDragOver(channelItem: TreeChannel, event: DragEvent): void {
-  const member = draggedMember.value;
-  if (!member || channelItem.id === "__current__") return;
-  const sourceChannel = memberChannels.value.find((channel) => channel.members.some((candidate) => candidate.id === member.id));
-  if (!sourceChannel || sourceChannel.id === channelItem.id) return;
-  event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-  dragOverChannelId.value = channelItem.id;
-}
-
-function onChannelDragLeave(channelItem: TreeChannel, event: DragEvent): void {
-  const currentTarget = event.currentTarget;
-  const relatedTarget = event.relatedTarget;
-  if (currentTarget instanceof HTMLElement && relatedTarget instanceof Node && currentTarget.contains(relatedTarget)) return;
-  if (dragOverChannelId.value === channelItem.id) dragOverChannelId.value = "";
-}
-
-function onChannelDrop(channelItem: TreeChannel, event: DragEvent): void {
-  event.preventDefault();
-  const member = draggedMember.value;
-  onMemberDragEnd();
-  if (!member || channelItem.id === "__current__") return;
-  void moveMemberDirect(member, channelItem.id);
-}
-
-function toggleWhisperTarget(member: ChannelMember): void {
-  if (member.isSelf) return;
-  const targets = new Set(whisperTargetIds);
-  if (targets.has(member.id)) targets.delete(member.id);
-  else if (targets.size < 8) targets.add(member.id);
-  setWhisperTargets([...targets]);
-  showToast(targets.has(member.id) ? t("setWhisperTarget") : t("removeWhisperTarget"));
-}
-
-function clearWhisperTargets(): void {
-  stopWhisperTalk();
-  setWhisperTargets([]);
-}
-
-function pokeMember(member: ChannelMember): void {
-  sendPoke(member.id, window.prompt(t("pokeMessagePrompt"), "") ?? "");
-  showToast(t("pokeSent"));
-}
-
-function copyMemberName(member: ChannelMember): void {
-  navigator.clipboard?.writeText(member.nickname).then(() => showToast(t("copiedNickname")), () => showToast(t("copyFailedToast")));
-}
-
-function toggleAway(): void {
-  away.value = !away.value;
-  awayMessage.value = away.value ? (window.prompt(t("awayPrompt"), awayMessage.value) ?? "") : "";
-  setAway(away.value, awayMessage.value);
-}
-
-function dismissPoke(id: string): void {
-  const index = pokeNotifications.findIndex((poke) => poke.id === id);
-  if (index >= 0) pokeNotifications.splice(index, 1);
-}
-
-function scrollChatToEnd() {
-  const list = chatListEl.value;
-  if (list) list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
-}
-
-function showToast(message: string) {
-  toast.value = message;
-  if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { toast.value = ""; }, 2800);
-}
-
-function avatarInitial(name: string) {
-  return (name.trim()[0] || "?").toUpperCase();
-}
-
-const avatarColors = ["#9edbd4", "#b9d4c5", "#e8c6a8", "#c5c7e8", "#edd2d4", "#c8d9e9", "#e4d3b8"];
-function avatarStyle(name: string, isSelf = false, avatar = "") {
-  const fallback = isSelf ? "linear-gradient(135deg, #006a64, #2e9f96)" : "";
-  let hash = 0;
-  for (let index = 0; index < name.length; index++) hash = name.charCodeAt(index) + ((hash << 5) - hash);
-  return {
-    background: fallback || avatarColors[Math.abs(hash) % avatarColors.length],
-    ...(avatar ? { backgroundImage: `url("${avatar}")`, backgroundPosition: "center", backgroundSize: "cover" } : {}),
-  };
-}
-
-function messageAvatar(message: ChatMessage): string {
-  const member = members.find((candidate) =>
-    (typeof message.senderId === "number" && candidate.id === message.senderId) ||
-    (Boolean(message.senderUid) && candidate.uid === message.senderUid),
-  );
-  return member?.avatar ?? "";
-}
-
-function isSpeaking(member: ChannelMember) {
-  return speakingIds.has(member.id);
-}
-
-function memberDisplayName(member: ChannelMember): string {
-  return member.isSelf ? `${member.nickname}${t("selfSuffix")}` : member.nickname;
-}
-
-function formatTime(timestamp: number) {
-  const locale = language.value === "zh" ? "zh-CN" : language.value === "de" ? "de-DE" : language.value === "ru" ? "ru-RU" : language.value === "ja" ? "ja-JP" : "en-US";
-  return new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(timestamp);
-}
-
-function rangeStyle(value: number, max: number) {
-  const percent = Math.max(0, Math.min(100, (value / max) * 100));
-  return { background: `linear-gradient(to right, #006a64 0%, #006a64 ${percent}%, #e7eceb ${percent}%, #e7eceb 100%)` };
-}
-
-function onVolInput(clientId: number, event: Event) {
-  setVolume(clientId, Number((event.target as HTMLInputElement).value) / 100);
-}
-
-function onInputVolume(event: Event) {
-  setInputVolume(Number((event.target as HTMLInputElement).value) / 100);
-}
-
-function onNoiseSuppressionToggle(event: Event) {
-  void setNoiseSuppressionEnabled((event.target as HTMLInputElement).checked);
-}
-
-function onOutputVolume(event: Event) {
-  setOutputVolume(Number((event.target as HTMLInputElement).value) / 100);
-}
-
-function onVoxThreshold(event: Event) {
-  setVoxThreshold(Number((event.target as HTMLInputElement).value) / 1000);
-}
-
-function onNotificationVolume(event: Event) {
-  setNotificationVolume(Number((event.target as HTMLInputElement).value) / 100);
-}
-
-async function onInputDeviceChange(event: Event) {
-  audioSettingsError.value = "";
-  try {
-    await setInputDevice((event.target as HTMLSelectElement).value);
-  } catch (error: unknown) {
-    audioSettingsError.value = microphoneErrorMessage(error, "无法切换麦克风");
-  }
-}
-
-async function onOutputDeviceChange(event: Event) {
-  audioSettingsError.value = "";
-  try {
-    await setOutputDevice((event.target as HTMLSelectElement).value);
-  } catch (error: unknown) {
-    audioSettingsError.value = localizedMessage(error instanceof Error ? error.message : "无法切换扬声器");
-  }
-}
-
-async function toggleMicTest() {
-  audioSettingsError.value = "";
-  try {
-    if (microphoneTestActive.value) stopMicrophoneTest();
-    else await startMicrophoneTest();
-  } catch (error: unknown) {
-    audioSettingsError.value = microphoneErrorMessage(error);
-  }
-}
-
-function microphoneErrorMessage(error: unknown, fallback = "请检查浏览器权限") {
-  const name = error instanceof DOMException ? error.name : "";
-  const reasons: Record<string, string> = {
-    NotAllowedError: "浏览器未授予麦克风权限",
-    NotFoundError: "未找到可用的麦克风",
-    NotReadableError: "麦克风可能正被其他程序占用",
-    OverconstrainedError: "所选麦克风当前不可用",
-    SecurityError: "浏览器阻止了麦克风访问",
-  };
-  return `麦克风访问失败：${reasons[name] ?? fallback}`;
-}
-
-const micMeterBars = computed(() => Math.round(micLevel.value * 24));
-function meterBarHeight(index: number) {
-  if (!microphoneTestActive.value) return 5;
-  const intensity = Math.max(0, micLevel.value - (index / 24) * 0.65);
-  return 5 + Math.round(intensity * 34);
-}
-
-function toggleMicrophone(): void {
-  setMicrophoneMuted(!microphoneMuted.value);
-  showToast(microphoneMuted.value ? t("microphoneMuted") : t("microphoneActive"));
-}
-
-function onScreenShareVolume(event: Event): void {
-  screenShareRemoteVolume.value = Math.max(0, Math.min(1, Number((event.target as HTMLInputElement).value) / 100));
-}
-
-function syncScreenShareFullscreen(): void {
-  screenShareFullscreen.value = document.fullscreenElement === screenSharePlayerEl.value;
-}
-
-async function toggleScreenShareFullscreen(): Promise<void> {
-  const player = screenSharePlayerEl.value;
-  if (!player) return;
-  try {
-    if (document.fullscreenElement === player) await document.exitFullscreen();
-    else if (player.requestFullscreen) await player.requestFullscreen();
-  } catch {
-    screenShareFullscreen.value = false;
-  }
-}
-
-async function startScreenShareWithSettings(): Promise<void> {
-  const preset = screenShareResolutionOptions.find((option) => option.value === screenShareResolutionPreset.value);
-  const settings: ScreenShareOutputSettings = {
-    ...(preset?.width && preset.height ? { maxWidth: preset.width, maxHeight: preset.height } : {}),
-    maxFrameRate: screenShareFrameRate.value,
-  };
-  localStorage.setItem("webspeak:screen-share-resolution", screenShareResolutionPreset.value);
-  localStorage.setItem("webspeak:screen-share-framerate", String(screenShareFrameRate.value));
-  screenShareSettingsOpen.value = false;
-  await startScreenShare(true, settings);
-}
-
-async function toggleAccompaniment(): Promise<void> {
-  try {
-    if (accompanimentActive.value) {
-      await stopAccompaniment();
-      showToast(t("accompanimentStopped"));
-      return;
-    }
-    await startAccompaniment();
-    if (accompanimentActive.value) showToast(t("accompanimentStarted"));
-  } catch {
-    const messageKey = accompanimentErrorCode.value === "needsWebRtc"
-      ? "accompanimentNeedsWebRtc"
-      : accompanimentErrorCode.value === "noAudio"
-        ? "accompanimentNoAudio"
-        : accompanimentErrorCode.value === "unsupported"
-          ? "accompanimentUnsupported"
-          : "accompanimentPermissionDenied";
-    showToast(t(messageKey));
-  }
-}
-
-function onWhisperPttDown(event: PointerEvent): void {
-  if (!whisperTargetIds.size) return;
-  const target = event.currentTarget as HTMLElement | null;
-  if (target?.setPointerCapture && !target.hasPointerCapture(event.pointerId)) target.setPointerCapture(event.pointerId);
-  whisperPttActive.value = true;
-  setWhisperActive(true);
-}
-
-function onWhisperPttUp(event: PointerEvent): void {
-  const target = event.currentTarget as HTMLElement | null;
-  if (target?.releasePointerCapture && target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
-  stopWhisperTalk();
-}
-
-function stopWhisperTalk(): void {
-  if (!whisperPttActive.value) return;
-  whisperPttActive.value = false;
-  setWhisperActive(false);
-}
 </script>
 
 <style scoped>
