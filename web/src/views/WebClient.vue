@@ -1,104 +1,49 @@
 <template>
   <div :class="['web-client', `language-${language}`]">
     <!-- Connection / welcome screen -->
-    <section v-if="!voiceState.connected && !voiceState.reconnecting && !voiceState.reconnectFailed" class="join-page">
-      <header class="join-header">
-        <div class="brand-lockup">
-          <img class="brand-mark" src="/网站图标.jpg" alt="WebSpeak" />
-          <div>
-            <strong>{{ siteName }}</strong>
-            <small>{{ t('browserWorkspace') }}</small>
-          </div>
-        </div>
-        <div class="header-tools"><div class="header-note"><span class="tiny-dot"></span> {{ t('secureGateway') }}</div><a class="github-button" href="https://github.com/EchoSixHIYA/WebSpeak-client-for-TeamSpeak" target="_blank" rel="noreferrer" :title="t('githubRepository')" :aria-label="t('githubRepository')"><Icon name="github" :size="18" /><span>{{ t('githubRepository') }}</span></a><button type="button" class="qq-button" :title="t('qqGroup')" :aria-label="t('qqGroup')" aria-haspopup="dialog" @click="qqModalOpen = true"><Icon name="qq" :size="18" /><span class="qq-label">{{ t('qqGroup') }}</span></button><a class="bilibili-button" href="https://space.bilibili.com/25414873" target="_blank" rel="noreferrer" :title="t('bilibiliProfile')" :aria-label="t('bilibiliProfile')"><span class="bilibili-glyph">B</span><span class="bilibili-label">{{ t('bilibiliProfile') }}</span></a><span class="version-badge" :title="`${t('currentVersion')}: v${appVersion}`" :aria-label="`${t('currentVersion')}: v${appVersion}`">v{{ appVersion }}</span><a class="changelog-button" href="https://github.com/EchoSixHIYA/WebSpeak-client-for-TeamSpeak/blob/master/CHANGELOG.md" target="_blank" rel="noreferrer" :title="t('viewChangelog')" :aria-label="t('viewChangelog')"><Icon name="clock" :size="16" /><span>{{ t('viewChangelog') }}</span></a><a class="guide-button" href="/admin" :title="t('adminConsole')" :aria-label="t('adminConsole')"><Icon name="settings" :size="15" /><span>{{ t('adminConsole') }}</span></a><button type="button" class="header-action theme-toggle" :title="themeLabel" :aria-label="themeLabel" @click="cycleTheme"><Icon :name="themeIcon" :size="17" /></button><LanguageSwitcher v-model="language" class="join-language-switcher" :menu-label="t('languageMenu')" @change="persistLanguage" /></div>
-      </header>
-
-      <main class="join-content">
-        <div class="join-copy">
-          <div class="eyebrow"><span class="eyebrow-dot"></span> {{ t('privateAudio') }}</div>
-          <h1>{{ t('joinLine1') }}<br /><em>{{ t('joinLine2') }}</em></h1>
-          <p class="join-description">{{ localizedWelcomeText }}</p>
-          <div class="promise-list">
-            <div class="promise-item"><span class="promise-icon"><Icon name="waveform" :size="16" /></span><span><b>{{ t('highQuality') }}</b><small>{{ t('opusAudio') }}</small></span></div>
-            <div class="promise-item"><span class="promise-icon mint"><Icon name="shield" :size="16" /></span><span><b>{{ t('secureJoin') }}</b><small>{{ t('inviteProtected') }}</small></span></div>
-            <div class="promise-item"><span class="promise-icon sand"><Icon name="users" :size="16" /></span><span><b>{{ t('realtime') }}</b><small>{{ t('membersSync') }}</small></span></div>
-          </div>
-          <div v-if="visitorNumber !== null" class="visitor-count" role="status" aria-live="polite">
-            <span class="visitor-count-orbit" aria-hidden="true"></span>
-            <span class="visitor-count-icon"><Icon name="users" :size="15" /></span>
-            <span class="visitor-count-label">{{ t('visitorCount', { count: visitorNumber }) }}</span>
-            <span v-if="visitorTotal !== null" class="visitor-count-divider" aria-hidden="true"></span>
-            <span v-if="visitorTotal !== null" class="visitor-count-total">{{ t('visitorTotal', { count: visitorTotal }) }}</span>
-            <span class="visitor-count-spark" aria-hidden="true">✦</span>
-          </div>
-        </div>
-
-        <div class="join-card">
-          <h2>{{ t('welcomeBack') }}</h2>
-          <p class="card-lead">{{ t('joinLead') }}</p>
-
-          <div v-if="voiceState.error" class="notice error-notice"><span class="notice-symbol">!</span><span class="notice-content"><span>{{ localizedMessage(voiceState.error) }}</span><code v-if="voiceState.errorCode">{{ t('errorCode') }}: {{ visibleErrorCode(voiceState.errorCode) }}</code></span></div>
-          <div v-if="browserError" class="notice warning-notice"><span class="notice-symbol">i</span><span>{{ localizedMessage(browserError) }}</span></div>
-          <div v-if="!serverConfigLoading && !initialized" class="notice warning-notice"><span class="notice-symbol">i</span><span>{{ t('notConfigured') }} <a href="/admin">{{ t('configureNow') }}</a></span></div>
-          <div v-if="!localPersistenceAvailable" class="notice warning-notice"><span class="notice-symbol">i</span><span>{{ t('localPersistenceUnavailable') }}</span></div>
-
-          <form v-if="initialized" class="join-form" @submit.prevent="doConnect">
-            <div v-if="accessMode === 'open'" class="field-grid target-fields">
-              <label class="field-label" for="server-address"><span>{{ t('serverAddress') }}</span><div class="field-wrap"><Icon name="server" :size="17" /><input id="server-address" v-model="serverHost" autocomplete="url" :placeholder="t('serverAddressPlaceholder')" /></div></label>
-              <label class="field-label" for="server-port"><span>{{ t('serverPort') }}</span><div class="field-wrap"><Icon name="hash" :size="17" /><input id="server-port" v-model="serverPort" inputmode="numeric" type="text" maxlength="5" :placeholder="t('serverPortPlaceholder')" /></div></label>
-            </div>
-            <div v-if="accelerationAvailable" class="acceleration-choice"><div class="acceleration-copy"><strong>{{ t('relayAcceleration') }}</strong><small>{{ t('relayAccelerationHint') }}</small></div><select v-model="accelerationRelayId" :aria-label="t('relayAcceleration')"><option value="">{{ t('directConnection') }}</option><option v-for="relay in accelerationRelays" :key="relay.id" :value="relay.id">{{ relay.name }}</option></select></div>
-            <div v-if="accessMode === 'open' && (favoriteServers.length || recentServers.length)" class="local-servers">
-              <div v-if="favoriteServers.length" class="local-server-group"><span>{{ t('favoriteServers') }}</span><button v-for="favorite in favoriteServers" :key="favorite.id" type="button" @click="selectLocalServer(favorite.address, favorite.nickname)">{{ favorite.label }}</button></div>
-              <div v-if="recentServers.length" class="local-server-group"><span>{{ t('recentServers') }}</span><button v-for="recent in recentServers" :key="recent.id" type="button" @click="selectLocalServer(recent.address, recent.nickname)">{{ recent.address }}</button></div>
-            </div>
-            <button v-if="accessMode === 'open' && serverHost.trim()" type="button" class="favorite-toggle" @click="toggleFavorite">{{ isFavorite ? t('removeFavorite') : t('saveFavorite') }}</button>
-
-            <template v-if="accessMode === 'open'">
-              <label class="field-label" for="server-password">{{ t('serverPassword') }} <span>{{ t('optional') }}</span></label>
-              <div class="field-wrap"><Icon name="lock" :size="17" /><input id="server-password" v-model="serverPassword" type="password" autocomplete="off" :placeholder="t('optionalPassword')" /></div>
-            </template>
-
-            <label class="field-label" for="nickname">{{ t('nickname') }}</label>
-            <div class="field-wrap">
-              <Icon name="users" :size="17" />
-              <input id="nickname" v-model="nickname" autocomplete="nickname" maxlength="30" :placeholder="t('nicknamePlaceholder')" autofocus />
-            </div>
-
-            <label class="field-label" for="channel">{{ t('targetChannel') }} <span>{{ t('optional') }}</span></label>
-            <div class="field-wrap">
-              <Icon name="hash" :size="17" />
-              <input id="channel" v-model="channel" :placeholder="t('emptyDefault')" @keyup.enter="doConnect" />
-            </div>
-
-            <details class="identity-options"><summary>{{ t('identityOptions') }}</summary><label class="remember-identity"><input v-model="rememberIdentity" type="checkbox" /><span><strong>{{ t('rememberIdentity') }}</strong><small>{{ t('rememberIdentityHint') }}</small></span></label></details><p v-if="rememberIdentity" class="identity-warning">{{ t('rememberIdentityConcurrentWarning') }}</p>
-
-            <button class="primary-button connect-button" :disabled="!canJoin || serverConfigLoading || !identityReady || voiceState.connecting" type="submit">
-              <span v-if="voiceState.connecting" class="button-spinner"></span>
-              <span>{{ voiceState.connecting ? t('connecting') : t('enterVoice') }}</span>
-              <Icon v-if="!voiceState.connecting" name="chevron-right" :size="17" />
-            </button>
-            <button v-if="voiceState.connecting" type="button" class="cancel-connect-button" @click="doDisconnect">{{ t('cancel') }}</button>
-          </form>
-          <div class="join-meta"><Icon name="lock" :size="14" /> {{ t('connectionAuthorized') }}</div>
-        </div>
-      </main>
-
-      <footer class="join-footer">
-        <span>WebSpeak</span><span class="footer-separator">·</span><span>{{ t('teamSpeakClient') }}</span><span class="footer-spacer"></span><button type="button" class="clear-local-button" @click="clearBrowserData">{{ t('clearLocalData') }}</button><span class="footer-separator">·</span><span>{{ t('browserSupport') }}</span>
-      </footer>
-
-      <!-- QQ community modal -->
-      <div v-if="qqModalOpen" class="modal-backdrop qq-modal-backdrop" @click.self="qqModalOpen = false">
-        <section class="qq-modal-card" role="dialog" aria-modal="true" :aria-labelledby="'qq-group-title'">
-          <button type="button" class="qq-modal-close" :aria-label="t('close')" :title="t('close')" @click="qqModalOpen = false"><Icon name="close" :size="19" /></button>
-          <div class="qq-modal-heading"><span class="card-kicker">{{ t('qqGroup') }}</span><h2 id="qq-group-title">{{ t('qqGroup') }}</h2></div>
-          <img class="qq-qr-image" src="/qq-group-qr.jpg" :alt="t('qqGroupQrAlt')" />
-          <p class="qq-direct-join">{{ t('qqJoinDirect') }}</p>
-          <a class="qq-join-link" :href="qqJoinUrl" :aria-label="t('joinQqGroup')" target="_blank" rel="noreferrer">{{ qqJoinUrl }}</a>
-        </section>
-      </div>
-    </section>
+    <JoinPage
+      v-if="!voiceState.connected && !voiceState.reconnecting && !voiceState.reconnectFailed"
+      v-model:language="language"
+      v-model:server-host="serverHost"
+      v-model:server-port="serverPort"
+      v-model:acceleration-relay-id="accelerationRelayId"
+      v-model:server-password="serverPassword"
+      v-model:nickname="nickname"
+      v-model:channel="channel"
+      v-model:remember-identity="rememberIdentity"
+      v-model:qq-modal-open="qqModalOpen"
+      :voice-state="voiceState"
+      :site-name="siteName"
+      :app-version="appVersion"
+      :visitor-number="visitorNumber"
+      :visitor-total="visitorTotal"
+      :localized-welcome-text="localizedWelcomeText"
+      :browser-error="browserError"
+      :server-config-loading="serverConfigLoading"
+      :initialized="initialized"
+      :local-persistence-available="localPersistenceAvailable"
+      :access-mode="accessMode"
+      :acceleration-available="accelerationAvailable"
+      :acceleration-relays="accelerationRelays"
+      :favorite-servers="favoriteServers"
+      :recent-servers="recentServers"
+      :is-favorite="isFavorite"
+      :can-join="canJoin"
+      :identity-ready="identityReady"
+      :qq-join-url="qqJoinUrl"
+      :theme-label="themeLabel"
+      :theme-icon="themeIcon"
+      :t="t"
+      :persist-language="persistLanguage"
+      :cycle-theme="cycleTheme"
+      :localized-message="localizedMessage"
+      :visible-error-code="visibleErrorCode"
+      :do-connect="doConnect"
+      :do-disconnect="doDisconnect"
+      :select-local-server="selectLocalServer"
+      :toggle-favorite="toggleFavorite"
+      :clear-browser-data="clearBrowserData"
+    />
 
     <!-- Connected application shell -->
     <div v-else :class="['app-shell', `mobile-view-${mobileSection}`]" @click="memberMenu = null">
