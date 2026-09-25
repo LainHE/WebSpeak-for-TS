@@ -1,0 +1,34 @@
+import type { WebRtcSessionDescription } from "../webrtc-audio.js";
+
+export function sendProtocolError(sendJson: (message: Record<string, unknown>) => void, code: string, message: string): void {
+  sendJson({ type: "error", error: { code, message, recoverable: false } });
+}
+export function parseWebRtcOffer(raw: string): WebRtcSessionDescription | null {
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { return null; }
+  if (!isRecord(value) || value.type !== "webrtcOffer" || !isRecord(value.payload) || !isRecord(value.payload.sdp)) return null;
+  const description = value.payload.sdp;
+  if (description.type !== "offer" || typeof description.sdp !== "string" || description.sdp.length > 256 * 1024) return null;
+  if (value.payload.muted !== undefined && typeof value.payload.muted !== "boolean") return null;
+  if (value.payload.accompanimentActive !== undefined && typeof value.payload.accompanimentActive !== "boolean") return null;
+  return {
+    type: "offer",
+    sdp: description.sdp,
+    muted: value.payload.muted === true,
+    accompanimentActive: value.payload.accompanimentActive === true,
+  };
+}
+export function isWebRtcStopMessage(raw: string): boolean {
+  try {
+    const value: unknown = JSON.parse(raw);
+    return isRecord(value) && value.type === "webrtcStop";
+  } catch {
+    return false;
+  }
+}
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+export function isChannelRecord(value: unknown): value is { id: string; name: string } {
+  return Boolean(value) && typeof value === "object" && typeof (value as { id?: unknown }).id === "string" && typeof (value as { name?: unknown }).name === "string";
+}
