@@ -8,6 +8,7 @@ export interface ScreenShareOutputSettings {
   maxWidth?: number;
   maxHeight?: number;
   maxFrameRate?: number;
+  maxBitrate?: number;
 }
 
 export interface ScreenShareCaptureStats {
@@ -381,10 +382,13 @@ export function createScreenShareController(transport: ScreenShareTransport) {
       if (targetFrameRate) firstEncoding.maxFramerate = targetFrameRate;
       // Give the encoder a generous bitrate budget for screen content so the
       // congestion controller does not squeeze it down to a blurry trickle on
-      // relayed (TURN) links. Budgets scale with the target output height:
-      // 1080p -> 8 Mbps, 720p -> 5 Mbps, 480p -> 3 Mbps, 360p -> 1.5 Mbps.
+      // relayed (TURN) links. By default the budget scales with the target
+      // output height (1080p -> 8 Mbps, 720p -> 5 Mbps, 480p -> 3 Mbps,
+      // 360p -> 1.5 Mbps); a user-provided maxBitrate always wins so viewers
+      // can trade quality against network headroom manually.
       const outputHeight = targetHeight ?? sourceHeight;
-      const maxBitrate =
+      const userBitrate = typeof requested?.maxBitrate === "number" && requested.maxBitrate > 0 ? requested.maxBitrate : null;
+      const maxBitrate = userBitrate ?? (
         outputHeight && outputHeight > 0
           ? outputHeight >= 1080
             ? 8_000_000
@@ -393,7 +397,8 @@ export function createScreenShareController(transport: ScreenShareTransport) {
               : outputHeight >= 480
                 ? 3_000_000
                 : 1_500_000
-          : 8_000_000;
+          : 8_000_000
+      );
       firstEncoding.maxBitrate = maxBitrate;
       parameters.encodings = [firstEncoding, ...encodings.slice(1)];
       // Prefer keeping resolution/detail crisp under pressure and let the
