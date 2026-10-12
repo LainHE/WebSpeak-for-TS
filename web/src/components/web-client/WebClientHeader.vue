@@ -28,7 +28,7 @@
       >
       <a
         class="github-button"
-        href="https://github.com/EchoSixHIYA/WebSpeak-client-for-TeamSpeak"
+        href="https://github.com/LainHE/WebSpeak-for-TS"
         target="_blank"
         rel="noreferrer"
         :title="t('githubRepository')"
@@ -39,30 +39,6 @@
           :size="18"
         /><span>{{ t("githubRepository") }}</span>
       </a>
-      <button
-        type="button"
-        class="qq-button"
-        :title="t('qqGroup')"
-        :aria-label="t('qqGroup')"
-        aria-haspopup="dialog"
-        @click="emit('openQq')"
-      >
-        <Icon
-          name="qq"
-          :size="18"
-        /><span class="qq-label">{{ t("qqGroup") }}</span>
-      </button>
-      <a
-        class="bilibili-button"
-        href="https://space.bilibili.com/25414873"
-        target="_blank"
-        rel="noreferrer"
-        :title="t('bilibiliProfile')"
-        :aria-label="t('bilibiliProfile')"
-      >
-        <span class="bilibili-glyph">B</span
-        ><span class="bilibili-label">{{ t("bilibiliProfile") }}</span>
-      </a>
       <span
         class="version-badge"
         :title="`${t('currentVersion')}: v${appVersion}`"
@@ -71,7 +47,7 @@
       >
       <a
         class="changelog-button"
-        href="https://github.com/EchoSixHIYA/WebSpeak-client-for-TeamSpeak/blob/master/CHANGELOG.md"
+        href="https://github.com/LainHE/WebSpeak-for-TS/blob/master/CHANGELOG.md"
         target="_blank"
         rel="noreferrer"
         :title="t('viewChangelog')"
@@ -81,18 +57,6 @@
           name="clock"
           :size="16"
         /><span>{{ t("viewChangelog") }}</span>
-      </a>
-      <a
-        v-if="!mobile"
-        class="guide-button"
-        href="/admin"
-        :title="t('adminConsole')"
-        :aria-label="t('adminConsole')"
-      >
-        <Icon
-          name="settings"
-          :size="15"
-        /><span>{{ t("adminConsole") }}</span>
       </a>
       <SkinSwitcher
         v-model="skinId"
