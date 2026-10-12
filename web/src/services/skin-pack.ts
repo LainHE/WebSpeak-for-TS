@@ -181,7 +181,7 @@ export function resolveSkinCssAssets(css: string, assets: Record<string, Blob>):
   const objectUrls: string[] = [];
   try {
     const root = postcss.parse(css, { from: undefined });
-    root.walkDecls((declaration) => {
+    root.walkDecls((declaration: Declaration) => {
       declaration.value = rewriteAssetUrls(declaration.value, (assetPath) => {
         const blob = assets[assetPath];
         if (!blob) throw new SkinPackError(`Skin asset is missing: ${assetPath}`, "SKIN_ASSET_MISSING");
@@ -425,7 +425,7 @@ function compileSkinCss(source: string, id: string, assets: Record<string, Blob>
   const fontFamilyNames = new Map<string, string>();
   const hideableRules = new WeakSet<Rule>();
   let nodeCount = 0;
-  root.walk((node) => {
+  root.walk((node: Node) => {
     nodeCount += 1;
     if (nodeCount > 12000) throw new SkinPackError("The CSS file contains too many rules.", "SKIN_CSS_COMPLEXITY");
   });
