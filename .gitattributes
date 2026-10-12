@@ -1,2 +1,4 @@
 # 合并上游代码时始终保留本仓库的 workflow 版本（LainHE 命名空间），避免 workflow 被覆盖或冲突
 .github/workflows/docker-publish.yml merge=ours
+
+web/src/components/web-client/WebClientHeader.vue merge=ours
