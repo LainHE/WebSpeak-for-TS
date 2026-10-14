@@ -1,6 +1,7 @@
 node_modules/
 dist/
 web/dist/
+web/skin-wasm-interpreter/target/
 mobile/node_modules/
 web/android/.gradle/
 web/android/build/
@@ -12,7 +13,7 @@ data/
 config.json
 *.log
 .env
-# Local deployment/download artifacts (see docs/LOCAL_ARTIFACTS.zh-CN.md).
+# Local deployment notes and downloaded artifacts.
 /release-artifacts/
 /webspeak-deploy*.tar.gz
 /webspeak-update*.tar.gz

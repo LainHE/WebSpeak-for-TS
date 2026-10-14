@@ -1,32 +1,31 @@
 ---
 name: webspeak-skin-development
-description: Create, refine, package, and verify WebSpeak visual skins while preserving the product's translated content, fixed component geometry, and interactions.
+description: Develop, review, package, or validate portable WebSpeak .wskin skins. Keep skin UI and implementation inside the package and use only released runtime APIs.
+metadata:
+  short-description: Develop portable WebSpeak skins
 ---
 
-# WebSpeak skin development
+# WebSpeak Skin Development
 
-Use this skill when editing or authoring a WebSpeak `.wskin` package, the ILLUSIA built-in skin, or skin-facing UI hooks. A skin changes artwork and visual treatment; WebSpeak owns page structure, text, and behavior. The administrator console is deliberately outside the skin scope.
+Develop the skin as a portable `.wskin` package. A skin task should not require a skin-specific edit to WebSpeak's client, server, shared protocol, or host-widget implementation. The package owns its page/component markup, styling, copy, layout, assets, and supported plugin logic. The host owns TeamSpeak transport, credentials, trusted actions, and the versioned public data/API contract.
 
-## Before editing
+## Workflow
 
-- Read [`docs/SKIN_DEVELOPMENT.md`](../../../docs/SKIN_DEVELOPMENT.md) for the current package validator and public hooks.
-- Use [`docs/examples/illusia-voice/`](../../../docs/examples/illusia-voice/) and [`docs/examples/ILLUSIA-VOICE.md`](../../../docs/examples/ILLUSIA-VOICE.md) as the reference implementation. Do not restore the removed Aurora Voice sample.
-- Inspect the actual component markup for `data-ws-page`, `data-ws-part`, and `data-ws-state` hooks. Treat Vue classes and incidental DOM structure as private.
+1. Locate the `webspeak-webclient` repository root, then read the single current contract and workflow in `docs/SKIN_DEVELOPMENT.md`. It covers package schemas, runtime data, permissions, actions, security boundaries, and validation. If a request needs an undocumented capability, identify the missing public contract before editing and treat that work as a separate platform change. Inspect the closest example under `docs/examples/`; do not copy unrelated product-specific content.
+2. Choose the least complex supported package format that can express the request: CSS/assets for appearance, `content.json` for localized copy, `layout.json` for author defaults, `components.json` for declarative structure and supported interactions, and the documented v4 Wasm plugin path only when local logic is required. JavaScript files in a package are not executed by the current runtime.
+3. Keep all skin-authored implementation in the package. Use stable public skin parts, component schema, published context fields, existing host widgets, and permission-gated actions. Do not add a widget, data field, action, CSS hook, or branch to core code for one skin. If a reusable platform capability is missing, identify the exact contract gap and treat it as separate platform work: define a generic, versioned API and compatibility behavior first; only then use that released API from the package.
+4. Set a unique skin ID, increment its package version for changed output, and set `minAppVersion` to the lowest compatible WebSpeak runtime. Keep component schema and plugin `apiVersion` aligned with the APIs actually used. Package every referenced image, font, stylesheet, component, and plugin asset. Use only safe package-relative paths; do not depend on local machine files, remote assets, private endpoints, or instance-specific frontend code.
+5. Build the `.wskin` from its source directory while including only files declared by the manifest. Validate the finished archive with the repository importer and keep any distributable built-in archive synchronized with its example source. An example README or other undeclared file belongs beside the package, not inside it.
+6. Verify the package at the scope of the change: run the skin package and component-schema tests; run the relevant type/build checks; import the exact archive in a compatible WebSpeak runtime. Check desktop and narrow layouts, all supported interface languages, long text, keyboard focus, reduced motion, contrast, and every interaction the skin replaces. For a portability claim, install the same archive (compare its SHA-256) in two instances with the same compatible runtime/API version; do not treat a successful build alone as proof.
 
-## Preserve the interface
+## Compatibility and truthfulness
 
-- Keep WebSpeak's translations and semantic content as the baseline. Add `content.json` only when a text override is an explicit part of the request; never use it to implement visual artwork.
-- Skin only with supported visual CSS and package-local images/fonts. The upload validator rejects layout, positioning, sizing, spacing, clipping, text-flow, and interaction-geometry changes. Do not work around it with selectors, pseudo-elements, or animation.
-- Never hide or obstruct critical controls, make a card or player move/resize, change a floating menu into a modal, or make artwork intercept pointer input. Keep `/admin/**` unskinned.
-- Use the host's reserved artwork hooks for layered character art and the headphone scene. Prefer transparent assets and `background-size: contain` where the reference requires the full character or chibi to remain visible; arrange the artwork around the fixed hook rather than changing its geometry.
-- Build visual depth with separate background, surface, and foreground artwork already exposed by the hooks. Avoid duplicate static decorations when an animated replacement exists. For motion, keep waveforms/sonar smooth and restrained, honor reduced-motion preferences, and retain readable focus, error, mute, and speaking states.
-- Keep skin-specific CSS variables under `--skin-*`. Use only package-local assets and confirm their redistribution rights.
+- `minAppVersion` is a lower compatibility bound, not a guarantee that an older or unrelated runtime implements every API. Read the current schema and runtime documentation before using a capability.
+- Dynamic values such as public connection state or administrator-configured copy are runtime inputs. The package contains how those values are rendered; it must not bundle secrets or assume a particular server's private configuration.
+- An existing host widget is a stable capability the package may declare. Its presence does not authorize changing that widget's implementation for a skin-specific design; use package CSS/components around it where supported.
+- Do not describe an unimplemented API as portable, mark a feature complete from schema validation alone, or claim that different runtime versions render identically. Report the tested package hash, compatible runtime/API versions, and any platform gap.
 
-## Verify and package
+## References
 
-1. Compare the implementation with its visual reference at desktop and narrow widths. Check the homepage, voice workspace, empty chat, member list, screen-share player, selectors, and `/demo`; verify no crop, overflow, text collision, or control overlap.
-2. Check all five interface languages, day/night modes, keyboard focus, and reduced-motion behavior. Confirm the admin console is unchanged.
-3. Run `npm test` and `npm --prefix web run build`. Fix validator or build failures rather than weakening the layout guardrails.
-4. Package the contents of the skin directory so `manifest.json` is at the archive root, then import it through `/admin/skins` and retest the installed `.wskin` in a visitor session.
-
-The three shipped skins—default day, default night, and ILLUSIA—are protected built-ins. Do not change their IDs or introduce upload/update flows that can disable, replace, or remove them.
+- `docs/SKIN_DEVELOPMENT.md` — the single current reference for skin formats, runtime APIs, permissions, data, actions, CSS hooks, security, and QA.
+- `docs/examples/ILLUSIA-VOICE.md` and `docs/examples/OPEN-VOICE-SURFACE.md` — full skin and surface examples.
