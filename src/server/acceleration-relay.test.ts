@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createHmac } from "node:crypto";
 import { createSocket, type Socket } from "node:dgram";
-import { createAccelerationRelayServer } from "./acceleration-relay.js";
+import { createAccelerationRelayClient, createAccelerationRelayServer } from "./acceleration-relay.js";
 
 const TOKEN = "test-acceleration-relay-token";
 const MAGIC = Buffer.from("WSAT");
@@ -174,5 +174,49 @@ test("closing a relay is idempotent after a failed sibling startup", async () =>
   assert.equal(failed, null);
   server.close();
   server.close();
+});
+
+test("a relay client reports an open tunnel and then a self-closed one", async () => {
+  // The reconnect path needs to tell "still usable" from "torn down": a closed
+  // tunnel silently no-ops every frame, so reusing it would reconnect forever
+  // onto a port nobody reads.
+  const server = await startRelay({});
+  const client = await createAccelerationRelayClient({
+    relayHost: "127.0.0.1",
+    relayPort: server.port,
+    token: TOKEN,
+    host: "8.8.8.8",
+    port: 9987,
+  });
+  try {
+    assert.equal(client.isClosed(), false, "an open tunnel must report itself usable");
+  } finally {
+    client.close();
+    server.close();
+  }
+  assert.equal(client.isClosed(), true, "close() must flip isClosed()");
+  client.close();
+  assert.equal(client.isClosed(), true, "close() stays idempotent");
+});
+
+test("an open relay client keeps isClosed() false while traffic flows", async () => {
+  const server = await startRelay({});
+  const client = await createAccelerationRelayClient({
+    relayHost: "127.0.0.1",
+    relayPort: server.port,
+    token: TOKEN,
+    host: "8.8.8.8",
+    port: 9987,
+  });
+  try {
+    assert.equal(client.isClosed(), false, "a live tunnel must not look stale");
+    // The reconnect guard keys off this flag, so it must keep reading false
+    // across awaited turns while the tunnel is genuinely open.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(client.isClosed(), false, "a live tunnel must not look stale later");
+  } finally {
+    client.close();
+    server.close();
+  }
 });
 
